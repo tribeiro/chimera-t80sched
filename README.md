@@ -28,7 +28,7 @@ PRIORITY:	The execution priority of the project. Lower is higher, so a project w
 0 gets observed earlier than 1, and so on. There may be multiple projects with the same priority.
 ```
 
-####################################################################################################
+```
 Table name: [obsblock]
 Information:	Observation block definition. Each project must have at least 1 block, may have more 
 than one. An observaiton block is the smaller unit of observation that is allowed.
@@ -52,11 +52,14 @@ schedalgorith	:	Type of scheduling algorithm. Some examples are;
 1 - time series
 2 - standard star observation (multiple airmasses)
 applyextcorr	:	Modify exposure time according to sky extiction? Boolean 0 or 1.
-####################################################################################################
+```
+
 To input observations blocks and targets a list of 
 pid , blockid , objectid , block configuration file 
 In general each block will contain only one target. But, blocks with multiple targets are allowed. 
 The format is simply a 4 column ascii file. You can check the pids, blockids, objectids in the database.
+
+```
 Example 1:
 SO2014B-123 000 147 config01_147.cfg
 SO2014B-123 000 148 config01_148.cfg
@@ -64,8 +67,12 @@ SO2014B-123 000 149 config01_149.cfg
 SO2014B-123 001 150 config01_150.cfg
 SO2014B-123 001 151 config01_151.cfg
 SO2014B-123 002 148 config02_148.cfg
+```
+
 This will include 6 objects in 3 blocks for project SO2014B-123. Block 0 will have objects 147, 148 
 and 149, Block 1 will have objects 149 and 150 and Block 2 repeats object 148 in a different configuration.
+
+```
 Example 2:
 SPLUS 000 000 splus_block.cfg
 SPLUS 001 001 splus_block.cfg
@@ -74,11 +81,16 @@ SPLUS 002 002 splus_block.cfg
 .
 .
 SPLUS  N   N  splus_block.cfg
+```
+
 This will include objects in blocks for project SPLUS. Block 0 will have object 0, Block 1 will have 
 object 1 and so on. All observations are performed with the same configuration. The configuration file
 must have the following format:
+
+```
 [blockconfig]
 filter = B,V,R,I
 exptime = 80.,80.,60.,40.
 nexp = 2,1,1,2
 imagetype=OBJECT,OBJECT,OBJECT,OBJECT
+```
