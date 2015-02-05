@@ -96,8 +96,9 @@ class BlockConfig(Base):
 	nexp    = Column(Integer, default=1)
 	
 	def __str__ (self):
-		return "#%i %s [filter: %s | exptime: %f | nexp: %i]" % (self.id,
+		return "#%i %s[%i] [filter: %s | exptime: %f | nexp: %i]" % (self.id,
 																 self.pid,
+																	 self.bid,
 																 self.filter,
 																 self.exptime,
 																 self.nexp)

@@ -569,10 +569,14 @@ class ChimeraT80Sched (ChimeraCLI):
 
 		slen = 0
 
-		tottime = np.zeros(query.count())
+		tottime = np.array([])
 
-		for ib,blk in enumerate(query):
-			tottime[ib] = blk.nexp*blk.exptime
+		bid = -1
+		for blk in query:
+			if bid != blk.bid:
+				tottime = np.append(tottime,0.)
+				bid = blk.bid
+			tottime[-1] += blk.nexp*blk.exptime
 
 		session.commit()
 
