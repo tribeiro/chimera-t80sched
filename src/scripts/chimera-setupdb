@@ -113,6 +113,7 @@ class SetupDB (ChimeraCLI):
 				b_id = config.get(ss,'id')
 				b_pid = config.get(ss,'pid')
 				maxairmass = config.get(ss,'maxairmass')
+				minairmass = config.get(ss,'minairmass')
 				maxmoonBright = config.get(ss,'maxmoonBright')
 				minmoonBright = config.get(ss,'minmoonBright')
 				minmoonDist = config.get(ss,'minmoonDist')
@@ -127,6 +128,7 @@ class SetupDB (ChimeraCLI):
 					block[0].bid = b_id
 					block[0].pid = b_pid
 					block[0].maxairmass = maxairmass
+					block[0].minairmass = minairmass
 					block[0].maxmoonBright = maxmoonBright
 					block[0].minmoonBright = minmoonBright
 					block[0].minmoonDist = minmoonDist
@@ -139,6 +141,7 @@ class SetupDB (ChimeraCLI):
 					block = BlockPar(	bid = b_id,
 										pid = b_pid,
 										maxairmass = maxairmass,
+										minairmass = minairmass,
 										maxmoonBright = maxmoonBright,
 										minmoonBright = minmoonBright,
 										minmoonDist = minmoonDist,
@@ -161,7 +164,7 @@ class SetupDB (ChimeraCLI):
 	def deleteProject(self,opt):
 
 		if not opt.pid:
-			self.err('*Specify project to delete with \'--pid\' ...')
+			self.err(red('*')+'Specify project to delete with \'--pid\' ...')
 			return -1
 		
 		# save a copy
@@ -264,7 +267,7 @@ class SetupDB (ChimeraCLI):
 	def addTargets(self, opt):
 
 		if not opt.filename:
-			self.err('*Input not given. Use \'-f\'...')
+			self.err(red('*')+'Input not given. Use \'-f\'...')
 			return -1
 		
 		self.out('-Reading target list from %s ...'%opt.filename)
@@ -281,7 +284,7 @@ class SetupDB (ChimeraCLI):
 		
 		for r in reqpar:
 			if not r in givedEntries.keys():
-				self.err('*Required parameter, %s, missing from input file...'%r)
+				self.err(red('*')+'Required parameter, %s, missing from input file...'%r)
 				return -1
 
 		# aditional entries
@@ -298,7 +301,7 @@ class SetupDB (ChimeraCLI):
 				p = Position.fromRaDec(str(targets['RA'][i]),
 									   str(targets['DEC'][i]))
 			except ValueError:
-				self.err('*Object in line %i has invalid coordinates (%s,%s). Skipping...'%(i,targets['RA'][i],targets['DEC'][i]))
+				self.err(red('*')+'Object in line %i has invalid coordinates (%s,%s). Skipping...'%(i,targets['RA'][i],targets['DEC'][i]))
 				pass
 			except:
 				raise
@@ -366,7 +369,7 @@ class SetupDB (ChimeraCLI):
 	def addObservingBlock(self, opt):
 		
 		if not opt.filename:
-			self.err('*Input not given. Use \'-f\'...')
+			self.err(red('*')+'Input not given. Use \'-f\'...')
 			return -1
 
 		self.out('-Reading observing blocks from %s'%(opt.filename))
@@ -382,16 +385,25 @@ class SetupDB (ChimeraCLI):
 			config = ConfigParser.RawConfigParser()
 
 			config.read(block[3])
-													
-			filters = config.get('blockconfig','filter').split(',')
-			exptime = config.get('blockconfig','exptime').split(',')
-			nexp = config.get('blockconfig','nexp').split(',')
-			imagetype = config.get('blockconfig','imagetype').split(',')
+			
+			try:
+				filters = config.get('blockconfig','filter').split(',')
+				exptime = config.get('blockconfig','exptime').split(',')
+				nexp = config.get('blockconfig','nexp').split(',')
+				imagetype = config.get('blockconfig','imagetype').split(',')
+			except:
+				self.err('No section blockconfig in file %s'%block[3])
+				raise
 			
 			addblock = session.query(ObsBlock).filter(ObsBlock.objid == block[2]).filter(ObsBlock.blockid == block[1]).filter(ObsBlock.pid == block[0]).filter(ObsBlock.pid == block[0])
 			if len(addblock[:]) > 0:
 				self.out('--Modifying block: %s'%addblock[0].id)
 				blockcnf = session.query(BlockConfig).filter(BlockConfig.bid == block[1])
+				addblock[0].objid = block[2],
+				addblock[0].blockid = block[1],
+				addblock[0].pid = block[0],
+				addblock[0].bparid = block[4]
+
 				for bb in blockcnf:
 					session.delete(bb)
 				for i in range(len(filters)):
@@ -400,15 +412,15 @@ class SetupDB (ChimeraCLI):
 											exptime=exptime[i],
 											nexp=nexp[i],
 										    imagetype=imagetype[i],
-                                            pid = block[0],
-                                            bparid = block[4])
+                                            pid = block[0])
 					session.add(blockcnf)
 					
 			else:
 				self.out('--Adding block: %s'%block)
 				addblock = ObsBlock(objid = block[2],
 									blockid = block[1],
-									pid = block[0])
+									pid = block[0],
+									bparid = block[4])
 				session.add(addblock)
 				for i in range(len(filters)):
 					blockcnf = BlockConfig( bid = block[1],
@@ -416,8 +428,7 @@ class SetupDB (ChimeraCLI):
 											exptime=exptime[i],
 											nexp=nexp[i],
 										    imagetype=imagetype[i],
-                                            pid = block[0],
-                                            bparid = block[4])
+                                            pid = block[0])
 					session.add(blockcnf)
 
 			session.commit()
@@ -477,7 +488,7 @@ class SetupDB (ChimeraCLI):
 	def deleteObservingBlock(self, opt):
 
 		if not opt.pid:
-			self.err('*Specify project to delete with \'--pid\' ...')
+			self.err(red('*')+'Specify project to delete with \'--pid\' ...')
 			return -1
 
 		# save a copy

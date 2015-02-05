@@ -93,4 +93,5 @@ filter = B,V,R,I
 exptime = 80.,80.,60.,40.
 nexp = 2,1,1,2
 imagetype=OBJECT,OBJECT,OBJECT,OBJECT
+salgorith = HIGHER
 ```
