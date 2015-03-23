@@ -1,5 +1,11 @@
 # chimera-t80sched
-A chimera script for scheduling and executing observations for the T80S telescope. 
+
+Chimera scripts and modules for scheduling and executing observations for the T80S telescope. The idea to provide a 
+module outside chimera was motivated by the fact that, given our current time and technical constraints, we would not 
+be able to provide a general purpose software. So, instead of trying to pursuit that (which is the main idea behind
+chimera) we decided to develop a separate module. This module is beeing designed to use all chimera's main scheduler
+structure but extending it to work with observing queues and, later, to store information about program execution etc.
+In the future we may try to make this module more general and incorporate it to chimera. 
 
 # Setting up the scheduler database
 
