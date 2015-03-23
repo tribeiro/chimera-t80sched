@@ -19,14 +19,15 @@ from chimera.core.callback import callback
 from chimera.util.position import Position
 from chimera.util.output import blue, green, red
 
-from chimera.controllers.scheduler.status import SchedulerStatus
-from chimera.controllers.scheduler.states import State
+#from chimera.controllers.scheduler.queue import QueueScheduler
+#from chimera.controllers.scheduler.status import SchedulerStatus
+#from chimera.controllers.scheduler.states import State
 
-from t80sched.scheduler import algorithms
+from t80sched.scheduler import algorithms,queue
 
-from t80sched.scheduler.model import (Session, Targets, Program, Projects,
-									  Point,BlockPar,BlockConfig,ObsBlock,
-									  Expose, PointVerify, AutoFocus)
+from t80sched.scheduler.model import (Session, Targets, Projects,Program,
+                                      BlockPar,BlockConfig,ObsBlock,Point,Expose,
+                                                 PointVerify, AutoFocus)
 
 from chimera.core.site import datetimeFromJD
 
@@ -34,629 +35,689 @@ from chimera.core.site import datetimeFromJD
 
 class ChimeraT80Sched (ChimeraCLI):
 
-	############################################################################
-	
-	def __init__(self):
-		ChimeraCLI.__init__(self, "chimera-sched",
-							"Scheduler controller", 0.0, port=9010)
-
-		self.obsStart = -1
-		#self.addHelpGroup("PJ", "")
-		'''
-		If no date is specified consider today. Night start/end at Astronomical 
-		twilight. JDstart/JDend override dates. Even if it is not night, 
-		observations will be scheduled (can be used for calibrations etc).
-
-		Some scheduling algorithms may require additional parameters, like 
-		selecting standard stars which the number of targets and observations 
-		can be different. These are inputed with -f.
-		'''
-		self.addController(name="site",
-				   cls="Site",
-				   required=True,
-				   help="Observing site",
-				   helpGroup="OBSERVATORY")
-
-		self.addParameters(dict(name="PID", long="pid", type='string',
-								help="Project ID flag. Use to select targets from DB.",
-								metavar="PID"))
-		self.addParameters(dict(name="JDstart", long="jdstart", type=float,
-								help="Julian date of the start of the observations to be scheduled. Override date.",
-								metavar="JDstart"))
-		self.addParameters(dict(name="JDend", long="jdend", type=float,
-								help="Julian date at the end of the observations to be scheduled. Override date.",
-								metavar="JDend"))
-		self.addParameters(dict(name="dstart", long="dateStart", type='string',
-								help="Date (yyyy/mm/dd-hh:mm:ss) of the start of the observations to be scheduled.",
-								metavar="dstart"))
-		self.addParameters(dict(name="dend", long="dateEnd", type='string',
-								help="Date (yyyy/mm/dd-hh:mm:ss.s) of the end of the observations to be scheduled.",
-								metavar="dend"))
-		self.addParameters(dict(name="filename", long="file", short="f",
-								default="",
-								help="Filename with parameters for scheduling algorith.",
-								metavar="FILENAME"))
-
-	############################################################################
-
-	@action(long="cleanQueue",
-		help="Delete all scheduled blocks from specified project.",
-		actionGroup="")
-	def cleanQueue(self,opt):
-
-		session = Session()
-		
-		if not opt.PID:
-			allpid = [ p.pid for p in session.query(Projects)]
-			merr = red('*')+'Specify project id (--pid). Available options are:'
-			for pid in allpid:
-				merr += '\n'+red('**')+'%s'%pid
-			self.err(merr)
-			session.commit()
-			return -1
-		else:
-			p = session.query(Projects).filter(Projects.pid == opt.PID).count()
-			if p == 0:
-				allpid = [ p.pid for p in session.query(Projects)]
-				merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
-				for pid in allpid:
-					merr += '\n'+red('**')+'%s'%pid
-				self.err(merr)
-				session.commit()
-				return -1
-
-		self.out('-Deleting all scheduled observing blocks from project %s from the queue.'%opt.PID)
-		
-		programs = session.query(Program).filter(Program.pi == opt.PID)
-
-		for p in programs:
-			self.out(red('--Deleting'))
-			self.out( red('---')+'%s'%p )
-			for act in p.actions:
-				session.delete(act)
-				self.out( red('---')+'%s'%act)
-			session.delete(p)
-			self.out(red('--Done'))
-
-		session.commit()
-
-		sched_blocks = session.query(ObsBlock).filter(ObsBlock.pid == opt.PID,
-											 ObsBlock.scheduled == 1)
-											 
-		for sb in sched_blocks:
-			sb.scheduled = 0
-
-		session.commit()
-
-		return 0
-				
-	############################################################################
-	
-	@action(long="makeQueue",
-		help="Select targets from specified project to be observed. ",
-		actionGroup="")
-	def makeQueue(self,opt):
-
-		session = Session()
-		
-		if not opt.PID:
-			allpid = [ p.pid for p in session.query(Projects)]
-			merr = red('*')+'Specify project id (--pid). Available options are:'
-			for pid in allpid:
-				merr += '\n'+red('**')+'%s'%pid
-			self.err(merr)
-			session.commit()
-			return -1
-		else:
-			p = session.query(Projects).filter(Projects.pid == opt.PID).count()
-			if p == 0:
-				allpid = [ p.pid for p in session.query(Projects)]
-				merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
-				for pid in allpid:
-					merr += '\n'+red('**')+'%s'%pid
-				self.err(merr)
-				session.commit()
-				return -1
-
-		if self.checkQueue(opt.PID):
-			self.out(red('+')+'Project already processed... Reprocessing a queue is a nasty job... Clean it and try again...')
-			session.commit()
-			return 0
-
-		self.out('-Selecting targets from project %s'%opt.PID)
-		
-		self.mktimes(opt)
-		
-		obsStart = self.obsStart
-		obsEnd = self.obsEnd
-		lststart = self.lststart-2.
-		lstend = self.lstend+2.
-		site = self.site
-		
-		self.out('-Observation start @ %s | LST = %4.1f h'%(str(obsStart)[:19],lststart))
-		self.out('-Observation end   @ %s | LST = %4.1f h'%(str(obsEnd)[:19],lstend))
-
-		obsStart = site.JD(obsStart)
-		obsEnd = site.JD(obsEnd)
-
-		ohh = int(np.floor( (obsEnd-obsStart)*24. ))
-		omm = int( np.floor( ((obsEnd-obsStart)*24. - ohh) * 60. ))
-		self.out('-Observing time: %2i:%2i h'%(ohh,omm))
-
-		##
-
-		session = Session()
-
-		# Look for suitable observing blocks for this night...
-		FLAG = opt.PID
-
-		## Select all observing blocks from this project that where not observed
-		## and are not scheduled for observations
-		
-		tList = None
-		if lststart < lstend:
-			tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
-														   BlockConfig.pid == FLAG,
-														   BlockPar.pid == FLAG,
-														   ObsBlock.scheduled==False,
-														   ObsBlock.observed==False,
-														   Targets.targetRa > lststart,
-														   Targets.targetRa < lstend).join(BlockPar).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
-		else:
-
-			tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
-														   BlockConfig.pid == FLAG,
-														   BlockPar.pid == FLAG,
-														   ObsBlock.scheduled==False,
-														   ObsBlock.observed==False,
-  														   or_(and_(Targets.targetRa > lststart,
-																	Targets.targetRa < 24.),
-															   and_(Targets.targetRa > 0.,
-																	Targets.targetRa < lstend))).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
-
-
-		if len(tList[:]) == 0:
-			self.out(blue('+')+'No targets available from this project this night...')
-			session.commit()
-			return -1
-		self.out('-Found %i suitable targets...'%(len(tList[:])))
-
-		## Separate observing blocks by scheduling algoriths
-
-		schedAlgList = np.array([t[1].schedalgorith for t in tList])
-		uSAL = np.unique(schedAlgList)
-		
-		self.out('-Found %i types of scheduling algorith...'%(len(uSAL)))
-		for i,sa_type in enumerate(uSAL):
-			self.out('--SA Type[%i] = %i'%(i+1,sa_type))
-
-		for sAL in uSAL:
-			
-			nquery = tList.filter(BlockPar.schedalgorith == sAL)
-			
-			qFunction = algorithms.ScheduleFunction(sAL,
-													obsStart=obsStart,
-													obsEnd=obsEnd,
-													s=self,
-													query=nquery,
-													site=self.site)
-			obsTargets = qFunction(self.bestSlotLen(opt.PID))
-			
-			# First schedule all
-			for bid in obsTargets:
-				if bid['blockid'] > 0:
-					oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
-					self.addObservation(oblock,bid['start'])
-					#for o in oblock:
-					#	o[0].scheduled = True
-					#session.commit()
-		
-			# Now mark as scheduled
-			for bid in obsTargets:
-				if bid['blockid'] > 0:
-					oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
-					for o in oblock:
-						o[0].scheduled = True
-					session.commit()
-
-
-		'''
-		blockid = -99
-		targetid = -99
-		## Select those that can be observed in this night
-		for t in tList:
-			#print t
-
-			if blockid != t[0].blockid:
-				print t[0]
-				print t[1]
-				blockid = t[0].blockid
-
-			if targetid != t[2].id:
-				print '\t',t[2]
-				targetid = t[2].id
-
-			print '\t\t',t[3]
-		
-		'''
-		session.commit()
-
-	############################################################################
-
-	@action(long="showQueue",
-			help="Show queue result for specified project.",
-			actionGroup="")
-	def showQueue(self,opt):
-	
-		session = Session()
-		
-		if not opt.PID:
-			allpid = [ p.pid for p in session.query(Projects)]
-			merr = red('*')+'Specify project id (--pid). Available options are:'
-			for pid in allpid:
-				merr += '\n'+red('**')+'%s'%pid
-			self.err(merr)
-			session.commit()
-			return -1
-		else:
-			p = session.query(Projects).filter(Projects.pid == opt.PID).count()
-			if p == 0:
-				allpid = [ p.pid for p in session.query(Projects)]
-				merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
-				for pid in allpid:
-					merr += '\n'+red('**')+'%s'%pid
-				self.err(merr)
-				session.commit()
-				return -1
-
-		programs = session.query(Program).filter(Program.pi == opt.PID).order_by(Program.slewAt)
-
-		odt = np.zeros(programs.count())
-		for i,p in enumerate(programs):
-			self.out( blue('---')+'[@MJD: %f]%s'%(p.slewAt,p) )
-			for ii,act in enumerate(p.actions):
-				self.out( blue('---')+'%s'%act)
-				if ii > 0:
-					odt[i]+=act.exptime*act.frames
-			self.out(blue('--Done'))
-
-		self.mktimes(opt)
-		session.commit()
-		return 0
-		
-		site = self.site
-		
-		t0 = site.JD(self.obsStart) #+2400000.5
-		tf = site.JD(self.obsEnd)#+2400000.5
-		
-		self.out(blue('['+'-'*120+']'))
-		
-		NTicks = 120
-		dt = NTicks/(tf-t0)
-		odt = odt/60./60./24.
-		for i,p in enumerate(programs):
-			pos = int((np.float(p.slewAt)-t0)*dt)
-			nt = int(odt[i]*dt)
-			self.out(blue('[')+' '*pos+'-'*nt+' '*(120-pos-nt)+blue(']'))
-		self.out(blue('['+'-'*NTicks+']'))
-		session.commit()
-
-		return 0
-
-	
-	############################################################################
-	@action(long="processQueue",
-			help="Process queue like chimera will do during an observation.",
-			actionGroup="")
-	def processQueue(self,opt):
-
-		self.mktimes(opt)
-
-		site = self.site
-		obsStart = site.JD(self.obsStart)
-		obsEnd = site.JD(self.obsEnd)
-		lststart = self.lststart
-		lstend = self.lstend
-
-		
-		time = obsStart
-		session = Session()
-		
-		appOpen = 0.
-		idle = 0.
-		
-			
-		programs = session.query(Program).filter(Program.finished == False).filter(Program.priority == 0).order_by(Program.slewAt)
-		aprograms = session.query(Program).filter(Program.finished == False).filter(Program.priority > 0).order_by(Program.slewAt)
-		
-		if not programs:
-			self.out('Stopping... No programs')
-
-		self.out('-Found %i programs in priority 0 queue' % programs.count())
-
-		self.out('@ %.4f: Night Start'%obsStart)
-		
-		for p in programs:
-			# Get alternate program
-			#aP,aplen = self.getAlternateProgram(time)
-			
-			if time <= p.slewAt:
-				aP,aplen = self.getAlternateProgram(aprograms,time)
-				idleTime = (p.slewAt-time)
-				while 0 <  aplen/86.4e3 < idleTime:
-					print('@ %.4f: Acquiring %45s '%(time,aP))
-					time+=(aplen/86.4e3)
-					appOpen+=aplen
-					idleTime = (p.slewAt-time)
-					aP.finished = True
-					session.commit()
-					aP,aplen = self.getAlternateProgram(aprograms,time)
-					if aplen < 0:
-						break
-				
-				#self.out('@ %.4f: Idle for %.2fh'%(time,(p.slewAt-time)*24.))
-				idle +=  idleTime
-				self.out('@ %.4f: Idle for %.2fh | @ %.4f Acquiring %45s '%(time,idleTime*24.,p.slewAt,p)+green('[OK]'))
-				etime = 0.
-				for ii,act in enumerate(p.actions):
-					if ii > 0:
-						etime+=act.exptime*act.frames
-				time = p.slewAt+etime/60./60./24.
-				appOpen += etime
-			else:
-				self.out('Slew@%.4f in the past. Now is %.4f '%(p.slewAt,time)+red('FAIL'))
-
-		while time < obsEnd:
-			aP,aplen = self.getAlternateProgram(aprograms,time)
-			if aplen < 0:
-				break
-			idleTime = (obsEnd-time)
-			#while 0 <  aplen/86.4e3 < idleTime:
-			print('@ %.4f: Acquiring %45s '%(time,aP))
-			time+=(aplen/86.4e3)
-			appOpen+=aplen
-			aP.finished = True
-			session.commit()
-
-
-		self.out('@ %.4f: Idle for %.2fh'%(time,(obsEnd-time)*24.))
-		idle += (obsEnd-time)
-		self.out('@ %.4f: Night end'%obsEnd)
-		self.out('-Total idle time: %.2fh'%(idle*24.))
-		self.out('-Total open shutter time: %.2fh'%(appOpen/60./60.))
-
-		aprograms = session.query(Program).filter(Program.priority > 0)
-
-		for ap in aprograms:
-			ap.finished = False
-		session.commit()
-		return 0
-
-	############################################################################
-	
-	def addObservation(self,block,obstime):
-	
-		session = Session()
-		
-		self.out('%s'%block[:][0][0])
-		self.out('%s'%block[:][0][1])
-		
-		targetList = np.array([])
-		
-		objname = ""
-		programs = []
-		
-		for subblock in block:
-			
-			if not subblock[0].objid in targetList:
-				
-				self.out('\t%s'%subblock[2])
-				
-				targetList = np.append(targetList,subblock[0].objid)
-		
-				objname = subblock[2].name
-				pquery = session.query(Projects).filter(Projects.pid == subblock[0].pid)
-				
-				program = Program(tid=subblock[0].objid,name = objname,
-								  pi=subblock[0].pid,priority=pquery[0].priority,
-								  slewAt=obstime)#,exposeAt=obstime)
-			
-
-				position = Position.fromRaDec(subblock[2].targetRa,
-											  subblock[2].targetDec,
-											  'J%.0f'%subblock[2].targetEpoch)
-
-				imgtype = subblock[3].imagetype.upper()
-				
-				if imgtype == "OBJECT":
-					if position:
-						program.actions.append(Point(targetRaDec=position))
-					else:
-						program.actions.append(Point(targetName=objname))
-				elif imgtype == "FLAT":
-					site = self._remoteManager.getProxy("/Site/0")
-					flatPosition = Position.fromAltAz(site['flat_alt'], site['flat_az'])
-					program.actions.append(Point(targetAltAz=flatPosition))
-				else:
-					self.out(blue('+')+'No target to point at...')
-
-			self.out( '\t\t%s'%(subblock[3]))
-			filter  = subblock[3].filter
-			exptime = subblock[3].exptime
-			frames  = subblock[3].nexp
-			imgtype = subblock[3].imagetype.upper()
-			
-			if imgtype in ("OBJECT", "FLAT"):
-				shutter = "OPEN"
-			else:
-				shutter = "CLOSE"
-
-			if imgtype == "BIAS":
-				exptime = 0
-
-			if imgtype in ("BIAS", "DARK"):
-				filter = None
-
-			program.actions.append(Expose(shutter=shutter,
-										  filename="%s-%s-$DATE-$TIME" % (subblock[0].pid,objname.replace(" ", "")),
-										  filter=filter,
-										  frames=frames,
-										  exptime=exptime,
-										  imageType=imgtype,
-										  objectName=objname))
-
-			programs.append(program)
-			#subblock[0].scheduled = True
-	
-			#session.commit()
-	
-		session.add_all(programs)
-		session.commit()
-
-	############################################################################
-
-	def checkQueue(self, PID):
-		'''Check if projet was already processed...
-			'''
-
-		session = Session()
-
-		progs = session.query(Program).filter(Program.pi == PID).first()
-
-		if progs:
-			session.commit()
-			return True
-
-		session.commit()
-		return False
-
-	############################################################################
-
-	def mktimes(self,opt):
-		# Determining start/end times
-		
-		site = self.site
-
-		self.obsStart = site.sunset_twilight_end()
-		self.obsEnd = site.sunrise_twilight_begin()
-		
-		if opt.JDstart:
-			self.obsStart = datetimeFromJD(opt.JDstart)
-		elif opt.dstart:
-			day,hour = opt.dstart.split('-')
-			yy,mm,dd = [int(val) for val in day.split('/')]
-			hh,mi,ss = [int(val) for val in hour.split(':') ]
-			self.obsStart = dt.datetime(yy,mm,dd,hh,mi,ss)
-		
-		if opt.JDend:
-			self.obsEnd = datetimeFromJD(opt.JDend)
-		elif opt.dend:
-			day,hour = opt.dend.split('-')
-			yy,mm,dd = [int(val) for val in day.split('/')]
-			hh,mi,ss = [int(val) for val in hour.split(':') ]
-			self.obsEnd = dt.datetime(yy,mm,dd,hh,mi,ss)
-
-		self.lststart = site.LST(self.obsStart).toH()
-		self.lstend = site.LST(self.obsEnd).toH()
-
-	############################################################################
-
-	def bestSlotLen(self,pid):
-
-		session = Session()
-
-		query = session.query(BlockConfig).filter(BlockConfig.pid == pid)
-
-		slen = 0
-
-		tottime = np.array([])
-
-		bid = -1
-		for blk in query:
-			if bid != blk.bid:
-				tottime = np.append(tottime,0.)
-				bid = blk.bid
-			tottime[-1] += blk.nexp*blk.exptime
-
-		session.commit()
-
-		return tottime.min()
-
-	############################################################################
-
-	def getAlternateProgram(self,programs,nowmjd):
-		
-		session = Session()
-
-		q_plist = session.query(Projects).filter(Projects.priority > 0)
-		
-		plist = np.unique(np.array([q.priority for q in q_plist]))
-		
-		for priority in plist:
-		
-			program1 = programs.order_by(desc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt > nowmjd).first()
-
-			program2 = programs.order_by(asc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt < nowmjd).first()
-
-			if not program1 and not program2:
-				#self.out('No program in alternate queue %i'%priority)
-				continue
-				#return None,-1
-			elif not program1:
-				#self.out('No program1 in alternate queue %i'%priority)
-				dT = 0
-				for ii,act in enumerate(program2.actions):
-					if ii > 0:
-						dT+=act.exptime*act.frames
-				session.commit()
-				return program2,dT
-			elif not program2:
-				#self.out('No program2 in alternate queue %i'%priority)
-				dT = 0
-				for ii,act in enumerate(program1.actions):
-					if ii > 0:
-						dT+=act.exptime*act.frames
-				session.commit()
-				return program1,dT
-				
-			#self.out('Found 2 suitable programs in alternate queue %i'%priority)
-			
-			wtime1 = (program1.slewAt-nowmjd)
-			wtime2 = (nowmjd-program2.slewAt)
-
-			if wtime1 < wtime2:
-				#self.out('Program1 closer')
-				dT = 0
-				for ii,act in enumerate(program1.actions):
-					if ii > 0:
-						dT+=act.exptime*act.frames
-				session.commit()
-				return program1,dT
-			else:
-				#self.out('Program2 closer')
-				dT = 0
-				for ii,act in enumerate(program2.actions):
-					if ii > 0:
-						dT+=act.exptime*act.frames
-				session.commit()
-				return program2,dT
-
-		session.commit()
-		return None,-1
-
-	############################################################################
+    ############################################################################
+
+    def __init__(self):
+        ChimeraCLI.__init__(self, "chimera-t80sched",
+                            "Scheduler controller", 0.0, port=9010)
+
+        self.obsStart = -1
+        #self.addHelpGroup("PJ", "")
+        '''
+        If no date is specified consider today. Night start/end at Astronomical
+        twilight. JDstart/JDend override dates. Even if it is not night,
+        observations will be scheduled (can be used for calibrations etc).
+
+        Some scheduling algorithms may require additional parameters, like
+        selecting standard stars which the number of targets and observations
+        can be different. These are inputed with -f.
+        '''
+        self.addController(name="site",
+                           cls="Site",
+                           required=True,
+                           help="Observing site",
+                           helpGroup="OBSERVATORY")
+
+        self.addController(name="scheduler",
+                           cls="Scheduler",
+                           required=True,
+                           help="Scheduler controller to be used",
+                           helpGroup="SCHEDULER")
+
+        self.addParameters(dict(name="PID", long="pid", type='string',
+                                help="Project ID flag. Use to select targets from DB.",
+                                metavar="PID"))
+        self.addParameters(dict(name="JDstart", long="jdstart", type=float,
+                                help="Julian date of the start of the observations to be scheduled. Override date.",
+                                metavar="JDstart"))
+        self.addParameters(dict(name="JDend", long="jdend", type=float,
+                                help="Julian date at the end of the observations to be scheduled. Override date.",
+                                metavar="JDend"))
+        self.addParameters(dict(name="dstart", long="dateStart", type='string',
+                                help="Date (yyyy/mm/dd-hh:mm:ss) of the start of the observations to be scheduled.",
+                                metavar="dstart"))
+        self.addParameters(dict(name="dend", long="dateEnd", type='string',
+                                help="Date (yyyy/mm/dd-hh:mm:ss.s) of the end of the observations to be scheduled.",
+                                metavar="dend"))
+        self.addParameters(dict(name="filename", long="file", short="f",
+                                default="",
+                                help="Filename with parameters for scheduling algorith.",
+                                metavar="FILENAME"))
+
+    ############################################################################
+
+    @action(long="cleanQueue",
+            help="Delete all scheduled blocks from specified project.",
+            actionGroup="")
+    def cleanQueue(self,opt):
+
+        session = Session()
+
+        if not opt.PID:
+            allpid = [ p.pid for p in session.query(Projects)]
+            merr = red('*')+'Specify project id (--pid). Available options are:'
+            for pid in allpid:
+                merr += '\n'+red('**')+'%s'%pid
+            self.err(merr)
+            session.commit()
+            return -1
+        else:
+            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            if p == 0:
+                allpid = [ p.pid for p in session.query(Projects)]
+                merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
+                for pid in allpid:
+                    merr += '\n'+red('**')+'%s'%pid
+                self.err(merr)
+                session.commit()
+                return -1
+
+        self.out('-Deleting all scheduled observing blocks from project %s from the queue.'%opt.PID)
+
+        programs = session.query(Program).filter(Program.pid == opt.PID)
+
+        for p in programs:
+            self.out(red('--Deleting'))
+            self.out( red('---')+'%s'%p )
+            for act in p.actions:
+                session.delete(act)
+                self.out( red('---')+'%s'%act)
+            session.delete(p)
+            self.out(red('--Done'))
+
+        session.commit()
+
+        sched_blocks = session.query(ObsBlock).filter(ObsBlock.pid == opt.PID,
+                                                      ObsBlock.scheduled == 1)
+
+        for sb in sched_blocks:
+            sb.scheduled = 0
+
+        session.commit()
+
+        return 0
+
+    ############################################################################
+
+    @action(long="makeQueue",
+            help="Select targets from specified project to be observed. ",
+            actionGroup="")
+    def makeQueue(self,opt):
+
+        session = Session()
+
+        if not opt.PID:
+            allpid = [ p.pid for p in session.query(Projects)]
+            merr = red('*')+'Specify project id (--pid). Available options are:'
+            for pid in allpid:
+                merr += '\n'+red('**')+'%s'%pid
+            self.err(merr)
+            session.commit()
+            return -1
+        else:
+            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            if p == 0:
+                allpid = [ p.pid for p in session.query(Projects)]
+                merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
+                for pid in allpid:
+                    merr += '\n'+red('**')+'%s'%pid
+                self.err(merr)
+                session.commit()
+                return -1
+
+        if self.checkQueue(opt.PID):
+            self.out(red('+')+'Project already processed... Reprocessing a queue is a nasty job... Clean it and try again...')
+            session.commit()
+            return 0
+
+        self.out('-Selecting targets from project %s'%opt.PID)
+
+        self.mktimes(opt)
+
+        obsStart = self.obsStart
+        obsEnd = self.obsEnd
+        lststart = self.lststart-2.
+        lstend = self.lstend+2.
+        site = self.site
+
+        self.out('-Observation start @ %s | LST = %4.1f h'%(str(obsStart)[:19],lststart))
+        self.out('-Observation end   @ %s | LST = %4.1f h'%(str(obsEnd)[:19],lstend))
+
+        obsStart = site.JD(obsStart)
+        obsEnd = site.JD(obsEnd)
+
+        ohh = int(np.floor( (obsEnd-obsStart)*24. ))
+        omm = int( np.floor( ((obsEnd-obsStart)*24. - ohh) * 60. ))
+        self.out('-Observing time: %02i:%02i h'%(ohh,omm))
+
+        ##
+
+        session = Session()
+
+        # Look for suitable observing blocks for this night...
+        FLAG = opt.PID
+
+        ## Select all observing blocks from this project that where not observed
+        ## and are not scheduled for observations
+
+        tList = None
+        if lststart < lstend:
+            tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
+                                                                                BlockConfig.pid == FLAG,
+                                                                                BlockPar.pid == FLAG,
+                                                                                ObsBlock.scheduled==False,
+                                                                                ObsBlock.observed==False,
+                                                                                Targets.targetRa > lststart,
+                                                                                Targets.targetRa < lstend).join(BlockPar).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
+        else:
+
+            tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
+                                                                                BlockConfig.pid == FLAG,
+                                                                                BlockPar.pid == FLAG,
+                                                                                ObsBlock.scheduled==False,
+                                                                                ObsBlock.observed==False,
+                                                                                or_(and_(Targets.targetRa > lststart,
+                                                                                         Targets.targetRa < 24.),
+                                                                                    and_(Targets.targetRa > 0.,
+                                                                                         Targets.targetRa < lstend))).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
+
+
+        if len(tList[:]) == 0:
+            self.out(blue('+')+'No targets available from this project this night...')
+            session.commit()
+            return -1
+        self.out('-Found %i suitable targets...'%(len(tList[:])))
+
+        ## Separate observing blocks by scheduling algoriths
+
+        schedAlgList = np.array([t[1].schedalgorith for t in tList])
+        uSAL = np.unique(schedAlgList)
+
+        self.out('-Found %i types of scheduling algorith...'%(len(uSAL)))
+        for i,sa_type in enumerate(uSAL):
+            self.out('--SA Type[%i] = %i'%(i+1,sa_type))
+
+        for sAL in uSAL:
+
+            nquery = tList.filter(BlockPar.schedalgorith == sAL)
+
+            qFunction = algorithms.ScheduleFunction(sAL,
+                                                    obsStart=obsStart,
+                                                    obsEnd=obsEnd,
+                                                    s=self,
+                                                    query=nquery,
+                                                    site=self.site)
+
+            obsTargets = qFunction(self.bestSlotLen(opt.PID))
+
+            # First schedule all
+            for bid in obsTargets:
+                if bid['blockid'] > 0:
+                    oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
+                    self.addObservation(oblock,bid['start'])
+                #for o in oblock:
+                #	o[0].scheduled = True
+                #session.commit()
+
+            # Now mark as scheduled
+            for bid in obsTargets:
+                if bid['blockid'] > 0:
+                    oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
+                    for o in oblock:
+                        o[0].scheduled = True
+                    session.commit()
+
+
+        '''
+        blockid = -99
+        targetid = -99
+        ## Select those that can be observed in this night
+        for t in tList:
+            #print t
+
+            if blockid != t[0].blockid:
+                print t[0]
+                print t[1]
+                blockid = t[0].blockid
+
+            if targetid != t[2].id:
+                print '\t',t[2]
+                targetid = t[2].id
+
+            print '\t\t',t[3]
+
+        '''
+        session.commit()
+
+    ############################################################################
+
+    @action(long="showQueue",
+            help="Show queue result for specified project.",
+            actionGroup="")
+    def showQueue(self,opt):
+
+        session = Session()
+
+        if not opt.PID:
+            allpid = [ p.pid for p in session.query(Projects)]
+            merr = red('*')+'Specify project id (--pid). Available options are:'
+            for pid in allpid:
+                merr += '\n'+red('**')+'%s'%pid
+            self.err(merr)
+            session.commit()
+            return -1
+        else:
+            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            if p == 0:
+                allpid = [ p.pid for p in session.query(Projects)]
+                merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
+                for pid in allpid:
+                    merr += '\n'+red('**')+'%s'%pid
+                self.err(merr)
+                session.commit()
+                return -1
+
+        programs = session.query(Program).filter(Program.pid == opt.PID).order_by(Program.slewAt)
+
+        odt = np.zeros(programs.count())
+        for i,p in enumerate(programs):
+            self.out( blue('---')+'[@MJD: %f]%s'%(p.slewAt,p) )
+            for ii,act in enumerate(p.actions):
+                self.out( blue('---')+'%s'%act)
+                if ii > 0:
+                    odt[i]+=act.exptime*act.frames
+            self.out(blue('--Done'))
+
+        self.mktimes(opt)
+        session.commit()
+        return 0
+
+        site = self.site
+
+        t0 = site.JD(self.obsStart) #+2400000.5
+        tf = site.JD(self.obsEnd)#+2400000.5
+
+        self.out(blue('['+'-'*120+']'))
+
+        NTicks = 120
+        dt = NTicks/(tf-t0)
+        odt = odt/60./60./24.
+        for i,p in enumerate(programs):
+            pos = int((np.float(p.slewAt)-t0)*dt)
+            nt = int(odt[i]*dt)
+            self.out(blue('[')+' '*pos+'-'*nt+' '*(120-pos-nt)+blue(']'))
+        self.out(blue('['+'-'*NTicks+']'))
+        session.commit()
+
+        return 0
+
+
+    ############################################################################
+    @action(long="processQueue",
+            help="Process queue like chimera will do during an observation.",
+            actionGroup="")
+    def processQueue(self,opt):
+
+        self.mktimes(opt)
+
+        site = self.site
+        obsStart = site.JD(self.obsStart)-2400000.5
+        obsEnd = site.JD(self.obsEnd)-2400000.5
+        lststart = self.lststart
+        lstend = self.lstend
+
+
+        time = obsStart
+
+        appOpen = 0.
+        idle = 0.
+
+        qExec = self.scheduler #queue.QueueScheduler()
+
+        session = Session()
+
+        while time < obsEnd:
+            #aP,aplen = self.getAlternateProgram(aprograms,time)
+            #if aplen < 0:
+            #    break
+
+            program = qExec.next(time)
+            if not program:
+                break
+            program = session.merge(program)
+            aplen = self.calcObsTime(program)
+
+            #while 0 <  aplen/86.4e3 < idleTime:
+            msg = ''
+            if program.slewAt - time > 1e-3:
+                msg += '[info: Program slew %.3fm in the future. waiting...]'%( (program.slewAt - time)*24.*60. )
+                idle += abs(program.slewAt-time)
+            elif program.slewAt - time < -1e-3:
+                msg += '[info: Program slew %.3fm in the past. Slewing now...]'%  ( (time - program.slewAt)*24.*60. )
+
+            print('@ %.5f (%.5f): Acquiring %45s %s'%(time,program.slewAt,program,msg))
+            time=program.slewAt+(aplen/86.4e3)
+            appOpen+=aplen
+            program.finished = True
+            session.commit()
+
+        aprograms = session.query(Program).filter(Program.finished == True)
+
+        for ap in aprograms:
+            ap.finished = False
+        session.commit()
+
+        self.out('@ %.4f: Idle for %.2fh'%(time,(obsEnd-time)*24.))
+        idle += (obsEnd-time)
+        self.out('@ %.4f: Night end'%obsEnd)
+        self.out('-Total idle time: %.2fh'%(idle*24.))
+        self.out('-Total open shutter time: %.2fh'%(appOpen/60./60.))
+
+        '''
+        programs = session.query(Program).filter(Program.finished == False).filter(Program.priority == 0).order_by(Program.slewAt)
+        aprograms = session.query(Program).filter(Program.finished == False).filter(Program.priority > 0).order_by(Program.slewAt)
+
+        if not programs:
+            self.out('Stopping... No programs')
+
+        self.out('-Found %i programs in priority 0 queue' % programs.count())
+
+        self.out('@ %.4f: Night Start'%obsStart)
+
+        for p in programs:
+            # Get alternate program
+            #aP,aplen = self.getAlternateProgram(time)
+
+            if time <= p.slewAt:
+                aP,aplen = self.getAlternateProgram(aprograms,time)
+                idleTime = (p.slewAt-time)
+                while 0 <  aplen/86.4e3 < idleTime:
+                    print('@ %.4f: Acquiring %45s '%(time,aP))
+                    time+=(aplen/86.4e3)
+                    appOpen+=aplen
+                    idleTime = (p.slewAt-time)
+                    aP.finished = True
+                    session.commit()
+                    aP,aplen = self.getAlternateProgram(aprograms,time)
+                    if aplen < 0:
+                        break
+
+                #self.out('@ %.4f: Idle for %.2fh'%(time,(p.slewAt-time)*24.))
+                idle +=  idleTime
+                self.out('@ %.4f: Idle for %.2fh | @ %.4f Acquiring %45s '%(time,idleTime*24.,p.slewAt,p)+green('[OK]'))
+                etime = 0.
+                for ii,act in enumerate(p.actions):
+                    if ii > 0:
+                        etime+=act.exptime*act.frames
+                time = p.slewAt+etime/60./60./24.
+                appOpen += etime
+            else:
+                self.out('Slew@%.4f in the past. Now is %.4f '%(p.slewAt,time)+red('FAIL'))
+
+        while time < obsEnd:
+            aP,aplen = self.getAlternateProgram(aprograms,time)
+            if aplen < 0:
+                break
+            idleTime = (obsEnd-time)
+            #while 0 <  aplen/86.4e3 < idleTime:
+            print('@ %.4f: Acquiring %45s '%(time,aP))
+            time+=(aplen/86.4e3)
+            appOpen+=aplen
+            aP.finished = True
+            session.commit()
+
+
+        self.out('@ %.4f: Idle for %.2fh'%(time,(obsEnd-time)*24.))
+        idle += (obsEnd-time)
+        self.out('@ %.4f: Night end'%obsEnd)
+        self.out('-Total idle time: %.2fh'%(idle*24.))
+        self.out('-Total open shutter time: %.2fh'%(appOpen/60./60.))
+
+        aprograms = session.query(Program).filter(Program.priority > 0)
+
+        for ap in aprograms:
+            ap.finished = False
+        session.commit()
+        '''
+        return 0
+
+    ############################################################################
+
+    def addObservation(self,block,obstime):
+
+        session = Session()
+
+        self.out('%s'%block[:][0][0])
+        self.out('%s'%block[:][0][1])
+
+        targetList = np.array([])
+
+        objname = ""
+        programs = []
+
+        for subblock in block:
+
+            if not subblock[0].objid in targetList:
+
+                self.out('\t%s'%subblock[2])
+
+                targetList = np.append(targetList,subblock[0].objid)
+
+                objname = subblock[2].name
+                pquery = session.query(Projects).filter(Projects.pid == subblock[0].pid)
+
+                program = Program(tid=subblock[0].objid,name = objname,
+                                  pi='',priority=pquery[0].priority,
+                                  slewAt=obstime-2400000.5,
+                                  pid=subblock[0].pid,
+                                  blockid=subblock[0].bparid)#,exposeAt=obstime)
+
+
+                position = Position.fromRaDec(subblock[2].targetRa,
+                                              subblock[2].targetDec,
+                                              'J%.0f'%subblock[2].targetEpoch)
+
+                imgtype = subblock[3].imagetype.upper()
+
+                if imgtype == "OBJECT":
+                    if position:
+                        program.actions.append(Point(targetRaDec=position))
+                    else:
+                        program.actions.append(Point(targetName=objname))
+                elif imgtype == "FLAT":
+                    site = self._remoteManager.getProxy("/Site/0")
+                    flatPosition = Position.fromAltAz(site['flat_alt'], site['flat_az'])
+                    program.actions.append(Point(targetAltAz=flatPosition))
+                else:
+                    self.out(blue('+')+'No target to point at...')
+
+            self.out( '\t\t%s'%(subblock[3]))
+            filter  = subblock[3].filter
+            exptime = subblock[3].exptime
+            frames  = subblock[3].nexp
+            imgtype = subblock[3].imagetype.upper()
+
+            if imgtype in ("OBJECT", "FLAT"):
+                shutter = "OPEN"
+            else:
+                shutter = "CLOSE"
+
+            if imgtype == "BIAS":
+                exptime = 0
+
+            if imgtype in ("BIAS", "DARK"):
+                filter = None
+
+            program.actions.append(Expose(shutter=shutter,
+                                          filename="%s-%s-$DATE-$TIME" % (subblock[0].pid,objname.replace(" ", "")),
+                                          filter=filter,
+                                          frames=frames,
+                                          exptime=exptime,
+                                          imageType=imgtype,
+                                          objectName=objname))
+
+            programs.append(program)
+        #subblock[0].scheduled = True
+
+        #session.commit()
+
+        session.add_all(programs)
+        session.commit()
+
+    ############################################################################
+
+    def checkQueue(self, PID):
+        '''Check if projet was already processed...
+            '''
+
+        session = Session()
+
+        progs = session.query(Program).filter(Program.pid == PID).first()
+
+        if progs:
+            session.commit()
+            return True
+
+        session.commit()
+        return False
+
+    ############################################################################
+
+    def mktimes(self,opt):
+        # Determining start/end times
+
+        site = self.site
+
+        self.obsStart = site.sunset_twilight_end()
+        self.obsEnd = site.sunrise_twilight_begin()
+
+        if opt.JDstart:
+            self.obsStart = datetimeFromJD(opt.JDstart)
+        elif opt.dstart:
+            day,hour = opt.dstart.split('-')
+            yy,mm,dd = [int(val) for val in day.split('/')]
+            hh,mi,ss = [int(val) for val in hour.split(':') ]
+            self.obsStart = dt.datetime(yy,mm,dd,hh,mi,ss)
+
+        if opt.JDend:
+            self.obsEnd = datetimeFromJD(opt.JDend)
+        elif opt.dend:
+            day,hour = opt.dend.split('-')
+            yy,mm,dd = [int(val) for val in day.split('/')]
+            hh,mi,ss = [int(val) for val in hour.split(':') ]
+            self.obsEnd = dt.datetime(yy,mm,dd,hh,mi,ss)
+
+        self.lststart = site.LST(self.obsStart).toH()
+        self.lstend = site.LST(self.obsEnd).toH()
+
+    ############################################################################
+
+    def bestSlotLen(self,pid):
+
+        session = Session()
+
+        query = session.query(BlockConfig).filter(BlockConfig.pid == pid)
+
+        slen = 0
+
+        tottime = np.array([])
+
+        bid = -1
+        for blk in query:
+            if bid != blk.bid:
+                tottime = np.append(tottime,0.)
+                bid = blk.bid
+            tottime[-1] += blk.nexp*blk.exptime
+
+        session.commit()
+
+        return tottime.min()
+
+    ############################################################################
+
+    def calcObsTime(self,program):
+        otime = 0.
+
+        for ii,act in enumerate(program.actions):
+            if ii > 0:
+                otime+=act.exptime*act.frames
+        return otime
+
+    ############################################################################
+
+    def getAlternateProgram(self,programs,nowmjd):
+
+        session = Session()
+
+        q_plist = session.query(Projects).filter(Projects.priority > 0)
+
+        plist = np.unique(np.array([q.priority for q in q_plist]))
+
+        for priority in plist:
+
+            program1 = programs.order_by(desc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt > nowmjd).first()
+
+            program2 = programs.order_by(asc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt < nowmjd).first()
+
+            if not program1 and not program2:
+                #self.out('No program in alternate queue %i'%priority)
+                continue
+            #return None,-1
+            elif not program1:
+                #self.out('No program1 in alternate queue %i'%priority)
+                dT = 0
+                for ii,act in enumerate(program2.actions):
+                    if ii > 0:
+                        dT+=act.exptime*act.frames
+                session.commit()
+                return program2,dT
+            elif not program2:
+                #self.out('No program2 in alternate queue %i'%priority)
+                dT = 0
+                for ii,act in enumerate(program1.actions):
+                    if ii > 0:
+                        dT+=act.exptime*act.frames
+                session.commit()
+                return program1,dT
+
+            #self.out('Found 2 suitable programs in alternate queue %i'%priority)
+
+            wtime1 = (program1.slewAt-nowmjd)
+            wtime2 = (nowmjd-program2.slewAt)
+
+            if wtime1 < wtime2:
+                #self.out('Program1 closer')
+                dT = 0
+                for ii,act in enumerate(program1.actions):
+                    if ii > 0:
+                        dT+=act.exptime*act.frames
+                session.commit()
+                return program1,dT
+            else:
+                #self.out('Program2 closer')
+                dT = 0
+                for ii,act in enumerate(program2.actions):
+                    if ii > 0:
+                        dT+=act.exptime*act.frames
+                session.commit()
+                return program2,dT
+
+        session.commit()
+        return None,-1
+
+    ############################################################################
+
 
 ################################################################################
-
 def main():
-	cli = ChimeraT80Sched()
-	cli.run(sys.argv)
-	cli.wait()
+    cli = ChimeraT80Sched()
+    cli.run(sys.argv)
+    cli.wait()
 
 ################################################################################
 
 if __name__ == '__main__':
-	
-	main()
 
-################################################################################
+    main()
+
+    ################################################################################

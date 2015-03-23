@@ -15,7 +15,9 @@ execfile(version_py)
 
 # chimera scripts
 t80sched_scripts = ['src/scripts/chimera-t80sched',
-					'src/scripts/chimera-setupdb']
+					'src/scripts/chimera-setupdb',
+					'src/scripts/chimera-qexec',
+                    'src/scripts/chimera-schedgui']
 
 # platform specific requirements
 platform_deps = []
@@ -34,6 +36,7 @@ setup(
     license=_t80sched_license_,
 
     package_dir={"": "src"},
+    package_data={'': ['*.ui']},
     packages=find_packages("src", exclude=["*.tests"]),
 
     include_package_data=True,

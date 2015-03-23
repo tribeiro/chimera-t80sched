@@ -12,17 +12,18 @@ varlook.py - GUI for looking up variability.
 	
 '''
 
-from t80sched.gui import *
+import sys,os
+from t80sched.gui import gui
 
 if __name__ == "__main__":
 	
-	logging.basicConfig(format='%(levelname)s:%(asctime)s::%(message)s',
-						level=logging.DEBUG)
+	gui.logging.basicConfig(format='%(levelname)s:%(asctime)s::%(message)s',
+						level=gui.logging.DEBUG)
 
 	
-	root = QtGui.QApplication(sys.argv)
+	root = gui.QtGui.QApplication(sys.argv)
 	
-	usergui = SchedulerGUI()
+	usergui = gui.SchedulerGUI()
 	
 	usergui.initGUI()
 	
