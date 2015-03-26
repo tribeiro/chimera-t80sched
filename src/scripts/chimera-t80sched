@@ -550,11 +550,14 @@ class ChimeraT80Sched (ChimeraCLI):
 
         @callback(self.localManager)
         def t80StateChangedClbk(newState, oldState):
-            self.out('%s -> %s'%(oldState,newState))
+            self.out('%s: %s -> %s'%(blue("[state]"),oldState,newState))
 
             if oldState == State.BUSY and newState == State.IDLE:
+                # When state changes from BUSY to IDLE, feed new program and
+                # issue a signal to the function that will tell the scheduler
+                # to start again...
                 self.out("=" * 40)
-                self.out("%s: No programs on scheduler database" % blue("[scheduler]"))
+                self.out("%s: No programs on chimera-scheduler database" % blue("[T80S-scheduler]"))
                 self.out("=" * 40)
 
                 self.addProject()
@@ -570,29 +573,79 @@ class ChimeraT80Sched (ChimeraCLI):
         self.scheduler.actionComplete += t80ActionCompleteClbk
         self.scheduler.stateChanged += t80StateChangedClbk
 
-        self.addProject()
-
-        self.scheduler.start()
-
         if self.scheduler.state() == State.OFF:
-            self.out("%s no programs to do" % blue("[scheduler]"))
+
+            self.addProject()
+
+            self.scheduler.start()
+
+            if self.scheduler.state() == State.OFF:
+                self.out("%s no programs to do" % red("[T80S-scheduler]"))
+                self.exit()
+            else:
+                self.wait(abort=False)
+
         else:
-           self.wait(abort=False)
+            # If chimera-scheduler is working, than just wait for it to
+            # callback for programs...
+            self.out("%s: Scheduler state is '%s'. Waiting call for programs..."%(blue("[T80S-scheduler]"),
+                                                                                self.scheduler.state()))
+            self.wait(abort=False)
 
     ############################################################################
 
-    def addProject(self):
+    def addProject(self,force=False,clean=False):
+        '''
+        Select program from T80-scheduler database and inject them in chimera
+        scheduler database. Only one program will be injected at a time, but
+        with all its actions. The force and clean parameters controls the
+        behaviour in case there is something already in chimera database.
+
+        Remember that chimera scheduler is dumb. It will take what ever is
+        in the database and observe in order of appearance! So even if there is
+        a program with earlier slewAt it is not guaranteed that it will be observed
+        first.
+
+        The combination of clean and force must be used with care. If clean is
+        True and force is False, it will check the status of the scheduler
+        first. If the scheduler is executing a project (state = BUSY) nothing
+        will be done. On the other hand, if both clean and force are True,
+        it will stop the scheduler (if it is executing), clean the queue, and
+        so on.
+
+        :param force: True  - Inject new program nonetheless.
+                      False - (default) Inject program only if chimera db is
+                               empty.
+
+        :param clean: True  - If there is anything in chimera db clean it
+                              first.
+                      False - (default) Does not change chimera db.
+
+        :return:
+        '''
+        # TODO: Check if there is something in the queue.
+        # TODO: Add flag to clean the queue and inject new program in
+        # TODO: case there is something there already.
+
+        chimerasession = cdb.Session()
+
+        chimeraprogram = chimerasession.query(cdb.Program)
+
+        busy = self.scheduler.state() == SchedulerStatus.BUSY
+
+        if chimeraprogram.count() > 0 and ( clean and (not busy:
+            # There are programs on chimera queue and
 
         # looking for something
         site = self.site
         mjd = site.MJD()
-        self.out('MJD = %.3f @ %s'%(mjd,site['name']))
+        self.out('%s: MJD = %.3f @ %s'%(blue("[T80S-scheduler]"), mjd,site['name']))
         qExec = queue.QueueScheduler(site)
 
         session = t80db.Session()
         program = qExec.next(mjd)
         if not program:
-            self.out("No program in the database...")
+            self.out("%s: No program in the database..."%(red("[T80S-scheduler]")))
             self.exit()
         program = session.merge(program)
         target = session.query(t80db.Targets).filter(t80db.Targets.id == program.tid).first()
@@ -602,11 +655,9 @@ class ChimeraT80Sched (ChimeraCLI):
                                       priority=program.priority,
                                       slewAt=program.slewAt )
 
-        chimerasession = cdb.Session()
-
         for action in program.actions:
             chimeraAction = chimerasession.merge(self.translateAction(action))
-            print action,'->',chimeraAction
+            self.out('%s: %s -> %s '%(blue("[T80S-scheduler]"), action,chimeraAction) )
             chimeraprogram.actions.append(chimeraAction)
 
         chimerasession.add(chimeraprogram)
