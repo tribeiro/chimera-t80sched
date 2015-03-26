@@ -8,26 +8,28 @@ import os
 import shutil
 import time
 import numpy as np
+import threading
 
 import datetime as dt
 
 from sqlalchemy import (or_,and_, desc, asc)
 
 from chimera.core.cli import ChimeraCLI, action
-from chimera.core.constants import DEFAULT_PROGRAM_DATABASE
 from chimera.core.callback import callback
 from chimera.util.position import Position
 from chimera.util.output import blue, green, red
-
-#from chimera.controllers.scheduler.queue import QueueScheduler
-#from chimera.controllers.scheduler.status import SchedulerStatus
-#from chimera.controllers.scheduler.states import State
+from chimera.controllers.scheduler.states import State
 
 from t80sched.scheduler import algorithms,queue
 
-from t80sched.scheduler.model import (Session, Targets, Projects,Program,
-                                      BlockPar,BlockConfig,ObsBlock,Point,Expose,
-                                                 PointVerify, AutoFocus)
+#from t80sched.scheduler.model import (Session, Targets, Projects,Program,
+#                                      BlockPar,BlockConfig,ObsBlock,Point,Expose,
+#                                                 PointVerify, AutoFocus)
+
+from t80sched.scheduler import model as t80db
+
+from chimera.controllers.scheduler import model as cdb
+from chimera.controllers.scheduler.status import SchedulerStatus
 
 from chimera.core.site import datetimeFromJD
 
@@ -52,6 +54,9 @@ class ChimeraT80Sched (ChimeraCLI):
         selecting standard stars which the number of targets and observations
         can be different. These are inputed with -f.
         '''
+
+        self.addHelpGroup("RUN", "Start/Stop/Info")
+
         self.addController(name="site",
                            cls="Site",
                            required=True,
@@ -97,10 +102,10 @@ class ChimeraT80Sched (ChimeraCLI):
             actionGroup="")
     def cleanQueue(self,opt):
 
-        session = Session()
+        session = t80db.Session()
 
         if not opt.PID:
-            allpid = [ p.pid for p in session.query(Projects)]
+            allpid = [ p.pid for p in session.query(t80db.Projects)]
             merr = red('*')+'Specify project id (--pid). Available options are:'
             for pid in allpid:
                 merr += '\n'+red('**')+'%s'%pid
@@ -108,9 +113,9 @@ class ChimeraT80Sched (ChimeraCLI):
             session.commit()
             return -1
         else:
-            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            p = session.query(t80db.Projects).filter(t80db.Projects.pid == opt.PID).count()
             if p == 0:
-                allpid = [ p.pid for p in session.query(Projects)]
+                allpid = [ p.pid for p in session.query(t80db.Projects)]
                 merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
                 for pid in allpid:
                     merr += '\n'+red('**')+'%s'%pid
@@ -120,7 +125,7 @@ class ChimeraT80Sched (ChimeraCLI):
 
         self.out('-Deleting all scheduled observing blocks from project %s from the queue.'%opt.PID)
 
-        programs = session.query(Program).filter(Program.pid == opt.PID)
+        programs = session.query(t80db.Program).filter(t80db.Program.pid == opt.PID)
 
         for p in programs:
             self.out(red('--Deleting'))
@@ -133,8 +138,8 @@ class ChimeraT80Sched (ChimeraCLI):
 
         session.commit()
 
-        sched_blocks = session.query(ObsBlock).filter(ObsBlock.pid == opt.PID,
-                                                      ObsBlock.scheduled == 1)
+        sched_blocks = session.query(t80db.ObsBlock).filter(t80db.ObsBlock.pid == opt.PID,
+                                                            t80db.ObsBlock.scheduled == 1)
 
         for sb in sched_blocks:
             sb.scheduled = 0
@@ -150,10 +155,10 @@ class ChimeraT80Sched (ChimeraCLI):
             actionGroup="")
     def makeQueue(self,opt):
 
-        session = Session()
+        session = t80db.Session()
 
         if not opt.PID:
-            allpid = [ p.pid for p in session.query(Projects)]
+            allpid = [ p.pid for p in session.query(t80db.Projects)]
             merr = red('*')+'Specify project id (--pid). Available options are:'
             for pid in allpid:
                 merr += '\n'+red('**')+'%s'%pid
@@ -161,9 +166,9 @@ class ChimeraT80Sched (ChimeraCLI):
             session.commit()
             return -1
         else:
-            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            p = session.query(t80db.Projects).filter(t80db.Projects.pid == opt.PID).count()
             if p == 0:
-                allpid = [ p.pid for p in session.query(Projects)]
+                allpid = [ p.pid for p in session.query(t80db.Projects)]
                 merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
                 for pid in allpid:
                     merr += '\n'+red('**')+'%s'%pid
@@ -196,10 +201,6 @@ class ChimeraT80Sched (ChimeraCLI):
         omm = int( np.floor( ((obsEnd-obsStart)*24. - ohh) * 60. ))
         self.out('-Observing time: %02i:%02i h'%(ohh,omm))
 
-        ##
-
-        session = Session()
-
         # Look for suitable observing blocks for this night...
         FLAG = opt.PID
 
@@ -208,24 +209,24 @@ class ChimeraT80Sched (ChimeraCLI):
 
         tList = None
         if lststart < lstend:
-            tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
-                                                                                BlockConfig.pid == FLAG,
-                                                                                BlockPar.pid == FLAG,
-                                                                                ObsBlock.scheduled==False,
-                                                                                ObsBlock.observed==False,
-                                                                                Targets.targetRa > lststart,
-                                                                                Targets.targetRa < lstend).join(BlockPar).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
+            tList = session.query(t80db.ObsBlock,t80db.BlockPar,t80db.Targets,t80db.BlockConfig).filter(t80db.ObsBlock.pid == FLAG,
+                                                                                                        t80db.BlockConfig.pid == FLAG,
+                                                                                                        t80db.BlockPar.pid == FLAG,
+                                                                                                        t80db.ObsBlock.scheduled==False,
+                                                                                                        t80db.ObsBlock.observed==False,
+                                                                                                        t80db.Targets.targetRa > lststart,
+                                                                                                        t80db.Targets.targetRa < lstend).join(t80db.BlockPar).join(t80db.Targets).join(t80db.BlockConfig).order_by(t80db.ObsBlock.blockid)
         else:
 
-            tList = session.query(ObsBlock,BlockPar,Targets,BlockConfig).filter(ObsBlock.pid == FLAG,
-                                                                                BlockConfig.pid == FLAG,
-                                                                                BlockPar.pid == FLAG,
-                                                                                ObsBlock.scheduled==False,
-                                                                                ObsBlock.observed==False,
-                                                                                or_(and_(Targets.targetRa > lststart,
-                                                                                         Targets.targetRa < 24.),
-                                                                                    and_(Targets.targetRa > 0.,
-                                                                                         Targets.targetRa < lstend))).join(Targets).join(BlockConfig).order_by(ObsBlock.blockid)
+            tList = session.query(t80db.ObsBlock,t80db.BlockPar,t80db.Targets,t80db.BlockConfig).filter(t80db.ObsBlock.pid == FLAG,
+                                                                                t80db.BlockConfig.pid == FLAG,
+                                                                                t80db.BlockPar.pid == FLAG,
+                                                                                t80db.ObsBlock.scheduled==False,
+                                                                                t80db.ObsBlock.observed==False,
+                                                                                or_(and_(t80db.Targets.targetRa > lststart,
+                                                                                         t80db.Targets.targetRa < 24.),
+                                                                                    and_(t80db.Targets.targetRa > 0.,
+                                                                                         t80db.Targets.targetRa < lstend))).join(t80db.Targets).join(t80db.BlockConfig).order_by(t80db.ObsBlock.blockid)
 
 
         if len(tList[:]) == 0:
@@ -245,7 +246,7 @@ class ChimeraT80Sched (ChimeraCLI):
 
         for sAL in uSAL:
 
-            nquery = tList.filter(BlockPar.schedalgorith == sAL)
+            nquery = tList.filter(t80db.BlockPar.schedalgorith == sAL)
 
             qFunction = algorithms.ScheduleFunction(sAL,
                                                     obsStart=obsStart,
@@ -259,7 +260,7 @@ class ChimeraT80Sched (ChimeraCLI):
             # First schedule all
             for bid in obsTargets:
                 if bid['blockid'] > 0:
-                    oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
+                    oblock = nquery.filter(t80db.ObsBlock.blockid == bid['blockid'])
                     self.addObservation(oblock,bid['start'])
                 #for o in oblock:
                 #	o[0].scheduled = True
@@ -268,7 +269,7 @@ class ChimeraT80Sched (ChimeraCLI):
             # Now mark as scheduled
             for bid in obsTargets:
                 if bid['blockid'] > 0:
-                    oblock = nquery.filter(ObsBlock.blockid == bid['blockid'])
+                    oblock = nquery.filter(t80db.ObsBlock.blockid == bid['blockid'])
                     for o in oblock:
                         o[0].scheduled = True
                     session.commit()
@@ -313,9 +314,9 @@ class ChimeraT80Sched (ChimeraCLI):
             session.commit()
             return -1
         else:
-            p = session.query(Projects).filter(Projects.pid == opt.PID).count()
+            p = session.query(t80db.Projects).filter(t80db.Projects.pid == opt.PID).count()
             if p == 0:
-                allpid = [ p.pid for p in session.query(Projects)]
+                allpid = [ p.pid for p in session.query(t80db.Projects)]
                 merr = red('*')+'No project named %s on the database. Available options are:'%opt.PID
                 for pid in allpid:
                     merr += '\n'+red('**')+'%s'%pid
@@ -323,7 +324,7 @@ class ChimeraT80Sched (ChimeraCLI):
                 session.commit()
                 return -1
 
-        programs = session.query(Program).filter(Program.pid == opt.PID).order_by(Program.slewAt)
+        programs = session.query(t80db.Program).filter(t80db.Program.pid == opt.PID).order_by(t80db.Program.slewAt)
 
         odt = np.zeros(programs.count())
         for i,p in enumerate(programs):
@@ -379,9 +380,9 @@ class ChimeraT80Sched (ChimeraCLI):
         appOpen = 0.
         idle = 0.
 
-        qExec = self.scheduler #queue.QueueScheduler()
+        qExec = queue.QueueScheduler(site)
 
-        session = Session()
+        session = t80db.Session()
         telPos = None #current telescope position
 
         while otime < obsEnd:
@@ -406,7 +407,7 @@ class ChimeraT80Sched (ChimeraCLI):
 
             _idle = _idle if _idle > 0 else 0.
             slewtime = 0.
-            target = session.query(Targets).filter(Targets.id == program.tid).first()
+            target = session.query(t80db.Targets).filter(t80db.Targets.id == program.tid).first()
             targetPos = Position.fromRaDec(target.targetRa,target.targetDec)
             if telPos:
                 adist = telPos.angsep(targetPos)
@@ -421,7 +422,7 @@ class ChimeraT80Sched (ChimeraCLI):
             telPos = targetPos
             session.commit()
 
-        aprograms = session.query(Program).filter(Program.finished == True)
+        aprograms = session.query(t80db.Program).filter(t80db.Program.finished == True)
 
         for ap in aprograms:
             ap.finished = False
@@ -503,9 +504,119 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    @action(help="Start the scheduler", helpGroup="RUN", actionGroup="RUN")
+    def start(self, options):
+
+        e = threading.Event()
+        t1 = threading.Thread(  name='waitStart',
+                                target=self.start_at_event,
+                                args=(e,))
+        t1.setDaemon(True)
+        t1.start()
+
+        @callback(self.localManager)
+        def t80ProgramBeginClbk(program):
+            session = cdb.Session()
+            program = session.merge(program)
+            self.out("=" * 40)
+            self.out("%s %s" % (blue("[program]"), program.name))
+
+        @callback(self.localManager)
+        def t80ProgramCompleteClbk(program, status, message=None):
+            session = cdb.Session()
+            program = session.merge(program)
+            if status == SchedulerStatus.OK:
+                self.out("%s %s %s" %
+                         (blue("[program]"), program.name, green(str(status))))
+            else:
+                self.out("%s %s %s (%s)" % (
+                    blue("[program]"), program.name, red(str(status)), red(str(message))))
+
+        @callback(self.localManager)
+        def t80ActionBeginClbk(action, message):
+            session = cdb.Session()
+            action = session.merge(action)
+            self.out("%s %s ..." % (blue("[action] "), message), end="")
+
+        @callback(self.localManager)
+        def t80ActionCompleteClbk(action, status, message=None):
+            session = cdb.Session()
+            action = session.merge(action)
+
+            if status == SchedulerStatus.OK:
+                self.out("%s" % green(str(status)))
+            else:
+                self.out("%s (%s)" % (red(str(status)), red(str(message))))
+
+        @callback(self.localManager)
+        def t80StateChangedClbk(newState, oldState):
+            self.out('%s -> %s'%(oldState,newState))
+
+            if oldState == State.BUSY and newState == State.IDLE:
+                self.out("=" * 40)
+                self.out("%s: No programs on scheduler database" % blue("[scheduler]"))
+                self.out("=" * 40)
+
+                self.addProject()
+
+                e.set()
+
+                #self.scheduler.control()
+                #self.exit()
+
+        self.scheduler.programBegin += t80ProgramBeginClbk
+        self.scheduler.programComplete += t80ProgramCompleteClbk
+        self.scheduler.actionBegin += t80ActionBeginClbk
+        self.scheduler.actionComplete += t80ActionCompleteClbk
+        self.scheduler.stateChanged += t80StateChangedClbk
+
+        self.addProject()
+
+        self.scheduler.start()
+
+        if self.scheduler.state() == State.OFF:
+            self.out("%s no programs to do" % blue("[scheduler]"))
+        else:
+           self.wait(abort=False)
+
+    ############################################################################
+
+    def addProject(self):
+
+        # looking for something
+        site = self.site
+        mjd = site.MJD()
+        self.out('MJD = %.3f @ %s'%(mjd,site['name']))
+        qExec = queue.QueueScheduler(site)
+
+        session = t80db.Session()
+        program = qExec.next(mjd)
+        if not program:
+            self.out("No program in the database...")
+            self.exit()
+        program = session.merge(program)
+        target = session.query(t80db.Targets).filter(t80db.Targets.id == program.tid).first()
+
+        chimeraprogram = cdb.Program( name = target.name,
+                                      pi=program.pi,
+                                      priority=program.priority,
+                                      slewAt=program.slewAt )
+
+        chimerasession = cdb.Session()
+
+        for action in program.actions:
+            chimeraAction = chimerasession.merge(self.translateAction(action))
+            print action,'->',chimeraAction
+            chimeraprogram.actions.append(chimeraAction)
+
+        chimerasession.add(chimeraprogram)
+        chimerasession.commit()
+
+    ############################################################################
+
     def addObservation(self,block,obstime):
 
-        session = Session()
+        session = t80db.Session()
 
         self.out('%s'%block[:][0][0])
         self.out('%s'%block[:][0][1])
@@ -524,9 +635,9 @@ class ChimeraT80Sched (ChimeraCLI):
                 targetList = np.append(targetList,subblock[0].objid)
 
                 objname = subblock[2].name
-                pquery = session.query(Projects).filter(Projects.pid == subblock[0].pid)
+                pquery = session.query(t80db.Projects).filter(t80db.Projects.pid == subblock[0].pid)
 
-                program = Program(tid=subblock[0].objid,name = objname,
+                program = t80db.Program(tid=subblock[0].objid,name = objname,
                                   pi='',priority=pquery[0].priority,
                                   slewAt=obstime-2400000.5,
                                   pid=subblock[0].pid,
@@ -541,13 +652,13 @@ class ChimeraT80Sched (ChimeraCLI):
 
                 if imgtype == "OBJECT":
                     if position:
-                        program.actions.append(Point(targetRaDec=position))
+                        program.actions.append(t80db.Point(targetRaDec=position))
                     else:
-                        program.actions.append(Point(targetName=objname))
+                        program.actions.append(t80db.Point(targetName=objname))
                 elif imgtype == "FLAT":
                     site = self._remoteManager.getProxy("/Site/0")
                     flatPosition = Position.fromAltAz(site['flat_alt'], site['flat_az'])
-                    program.actions.append(Point(targetAltAz=flatPosition))
+                    program.actions.append(t80db.Point(targetAltAz=flatPosition))
                 else:
                     self.out(blue('+')+'No target to point at...')
 
@@ -568,7 +679,7 @@ class ChimeraT80Sched (ChimeraCLI):
             if imgtype in ("BIAS", "DARK"):
                 filter = None
 
-            program.actions.append(Expose(shutter=shutter,
+            program.actions.append(t80db.Expose(shutter=shutter,
                                           filename="%s-%s-$DATE-$TIME" % (subblock[0].pid,objname.replace(" ", "")),
                                           filter=filter,
                                           frames=frames,
@@ -590,9 +701,9 @@ class ChimeraT80Sched (ChimeraCLI):
         '''Check if projet was already processed...
             '''
 
-        session = Session()
+        session = t80db.Session()
 
-        progs = session.query(Program).filter(Program.pid == PID).first()
+        progs = session.query(t80db.Program).filter(t80db.Program.pid == PID).first()
 
         if progs:
             session.commit()
@@ -634,9 +745,9 @@ class ChimeraT80Sched (ChimeraCLI):
 
     def bestSlotLen(self,pid):
 
-        session = Session()
+        session = t80db.Session()
 
-        query = session.query(BlockConfig).filter(BlockConfig.pid == pid)
+        query = session.query(t80db.BlockConfig).filter(t80db.BlockConfig.pid == pid)
 
         slen = 0
 
@@ -667,17 +778,17 @@ class ChimeraT80Sched (ChimeraCLI):
 
     def getAlternateProgram(self,programs,nowmjd):
 
-        session = Session()
+        session = t80db.Session()
 
-        q_plist = session.query(Projects).filter(Projects.priority > 0)
+        q_plist = session.query(t80db.Projects).filter(t80db.Projects.priority > 0)
 
         plist = np.unique(np.array([q.priority for q in q_plist]))
 
         for priority in plist:
 
-            program1 = programs.order_by(desc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt > nowmjd).first()
+            program1 = programs.order_by(desc(t80db.Program.slewAt)).filter(t80db.Program.priority == priority).filter(t80db.Program.slewAt > nowmjd).first()
 
-            program2 = programs.order_by(asc(Program.slewAt)).filter(Program.priority == priority).filter(Program.slewAt < nowmjd).first()
+            program2 = programs.order_by(asc(t80db.Program.slewAt)).filter(t80db.Program.priority == priority).filter(t80db.Program.slewAt < nowmjd).first()
 
             if not program1 and not program2:
                 #self.out('No program in alternate queue %i'%priority)
@@ -727,6 +838,59 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    def translateAction(self,action):
+        '''
+        Take an action from t80sched-database and translate it to a
+        chimera-database.
+
+        :param action:
+        :return: action
+        '''
+
+        session = t80db.Session()
+        waction = session.merge(action)
+
+        if isinstance(waction, t80db.Point):
+            raction = cdb.Point(targetRaDec=waction.targetRaDec,
+                                targetAltAz=waction.targetAltAz,
+                                targetName=waction.targetName)
+        elif isinstance(waction,t80db.Expose):
+            raction = cdb.Expose(filter=waction.filter,
+                                 frames=waction.frames,
+                                 exptime=waction.exptime,
+                                 binning=waction.binning,
+                                 window=waction.window,
+                                 shutter=waction.shutter,
+                                 imageType=waction.imageType,
+                                 filename=waction.filename,
+                                 objectName=waction.objectName)
+        elif isinstance(waction, t80db.AutoFocus):
+            raction = cdb.AutoFocus(obsstart=waction.obsstart,
+                                    obsend=waction.obsend,
+                                    step=waction.step,
+                                    filter=waction.filter,
+                                    exptime=waction.exptime,
+                                    binning=waction.binning,
+                                    window=waction.window)
+        elif isinstance(waction, t80db.PointVerify):
+            raction = cdb.PointVerify(here=waction.here,
+                                      choose=waction.choose)
+        else:
+            raction = None
+
+        return raction
+    ############################################################################
+
+    def start_at_event(self,e):
+        """Wait for the event to be set before doing anything"""
+
+        e.clear()
+        while True:
+            event_is_set = e.wait()
+            # Start scheduler when event is set
+            self.scheduler.start()
+            self.out('Event set')
+            e.clear()
 
 ################################################################################
 def main():

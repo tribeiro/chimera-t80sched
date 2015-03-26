@@ -4,7 +4,7 @@
     the difference that it will 
 '''
 
-from chimera.controllers.scheduler.ischeduler import IScheduler
+#from chimera.controllers.scheduler.ischeduler import IScheduler
 #from chimera.controllers.scheduler.model import Session, Program
 from chimera.util.position import Position
 
@@ -14,30 +14,22 @@ from t80sched.scheduler.model import Session, Program, Targets, BlockPar
 
 #from sqlalchemy import (desc, asc)
 
-import chimera.core.log
+#import chimera.core.log
 import logging #as log
 
 log = logging.getLogger("chimera.controllers.scheduler.t80sched")
 
 import numpy as np
 
-class QueueScheduler (IScheduler):
+class fakeSM():
+    def seeing(self,time=None):
+        return -1
 
-    def __init__ (self):
-        #self.rq = None
-        self.machine = None
-        self.site = None
-        self.seeingmonitor = None
+class QueueScheduler ():
 
-    def reschedule (self, machine):
-        '''
-        In Queue operations, reschedule should just wake up the machine. The
-        job of finding suitable programs is delegated to next(), which finds
-        something to do.
-        '''
-        self.machine = machine
-
-        machine.wakeup()
+    def __init__ (self,site):
+        self.site = site
+        self.seeingmonitor = fakeSM()
 
     def next (self, nowmjd=None):
 
