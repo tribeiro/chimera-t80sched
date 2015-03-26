@@ -116,8 +116,8 @@ def ScheduleFunction(opt,*args,**kwargs):
                     # use temporary arrays...
                     s_target = targets[:][tmp_radecPos[stg]]
 
-                    while ( (tmp_radecArray[stg].angsep(moonRaDec) < s_target[1].minmoonDist)  or
-                            s_target[1].minmoonBright < moonBrightness < s_target[1].maxmoonBright ):
+                    while ( (tmp_radecArray[stg].angsep(moonRaDec) < s_target[1].minmoonDist)  or not (
+                            s_target[1].minmoonBright < moonBrightness < s_target[1].maxmoonBright ) ):
                         if len(tmp_Mask) == 0:
                             break
                         msg = '''Target %s %s cannot be observed due to moon restrictions (d = %.2f < %.2f).
