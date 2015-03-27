@@ -14,7 +14,7 @@ import datetime as dt
 
 from sqlalchemy import (or_,and_, desc, asc)
 
-from chimera.core.cli import ChimeraCLI, action
+from chimera.core.cli import ChimeraCLI, action, ParameterType
 from chimera.core.callback import callback
 from chimera.util.position import Position
 from chimera.util.output import blue, green, red
@@ -94,6 +94,14 @@ class ChimeraT80Sched (ChimeraCLI):
                                 default="",
                                 help="Filename with parameters for scheduling algorith.",
                                 metavar="FILENAME"))
+        self.addParameters(dict(name="forceAtStart", long="forceAtStart",
+                                default=True,type=ParameterType.BOOLEAN,
+                                help="Force option at start.",
+                                metavar="SCHEDULER"))
+        self.addParameters(dict(name="cleanAtStart", long="cleanAtStart",
+                                default=True,type=ParameterType.BOOLEAN,
+                                help="Clean chimera database at start.",
+                                metavar="SCHEDULER"))
 
     ############################################################################
 
@@ -414,7 +422,7 @@ class ChimeraT80Sched (ChimeraCLI):
                 slewtime = np.float(adist.toAS())/60./60./86.4e3 # consider 1 arcmin / second
             slewtime = slewtime if slewtime > _idle else 0 # if slewtime larger than idle time slewtime will be zero
             msg += ' | slewtime = %.5fm'%(slewtime*60.*60.)
-            print('@ %.5f (%.5f): Acquiring %45s %s'%(otime,program.slewAt,program,msg))
+            self.out('@ %.5f (%.5f): Acquiring %45s %s'%(otime,program.slewAt,program,msg))
             dt = (aplen/86.4e3) + slewtime + _idle
             otime+=dt
             appOpen+=aplen
@@ -532,6 +540,11 @@ class ChimeraT80Sched (ChimeraCLI):
                 self.out("%s %s %s (%s)" % (
                     blue("[program]"), program.name, red(str(status)), red(str(message))))
 
+            sessionT80 = t80db.Session()
+            t80program = sessionT80.query(t80db.Program).filter(t80db.Program.id == program.tid).first()
+            t80program.finished = True
+            sessionT80.commit()
+
         @callback(self.localManager)
         def t80ActionBeginClbk(action, message):
             session = cdb.Session()
@@ -560,7 +573,7 @@ class ChimeraT80Sched (ChimeraCLI):
                 self.out("%s: No programs on chimera-scheduler database" % blue("[T80S-scheduler]"))
                 self.out("=" * 40)
 
-                self.addProject()
+                #self.addProject()
 
                 e.set()
 
@@ -575,7 +588,8 @@ class ChimeraT80Sched (ChimeraCLI):
 
         if self.scheduler.state() == State.OFF:
 
-            self.addProject()
+            self.addProject(force=options.forceAtStart,
+                            clean=options.cleanAtStart)
 
             self.scheduler.start()
 
@@ -623,20 +637,39 @@ class ChimeraT80Sched (ChimeraCLI):
 
         :return:
         '''
-        # TODO: Check if there is something in the queue.
-        # TODO: Add flag to clean the queue and inject new program in
-        # TODO: case there is something there already.
 
         chimerasession = cdb.Session()
 
-        chimeraprogram = chimerasession.query(cdb.Program)
+        chimeraprogram = chimerasession.query(cdb.Program).filter(cdb.Program.finished==False)
 
-        busy = self.scheduler.state() == SchedulerStatus.BUSY
+        busy = self.scheduler.state() == State.BUSY
 
-        if chimeraprogram.count() > 0 and ( clean and (not busy:
-            # There are programs on chimera queue and
+        if chimeraprogram.count() > 0 and ( ( clean and not busy ) or ( clean and force ) ):
+            # There are programs on chimera queue and it will be cleaned
+            if busy:
+                # if chimera-scheduler is running stop it before cleaning database
+                self.out('%s Stopping scheduler..'%(blue('[T80S-scheduler]')))
+                self.scheduler.stop()
+            # Now clean chimera db
+            self.out('%s Cleaning chimera database'%(red('[T80S-scheduler]')))
+            for p in chimeraprogram:
+                p = chimerasession.merge(p)
+                self.out(red('-Deleting'))
+                self.out( red('|')+'%s'%p )
+                for act in p.actions:
+                    act = chimerasession.merge(act)
+                    chimerasession.delete(act)
+                    self.out( red('|')+'%s'%act)
+                chimerasession.delete(p)
+                self.out(red('-Done'))
 
-        # looking for something
+            chimerasession.commit()
+        elif chimeraprogram.count() > 0 and not force:
+            self.out('%s Scheduler has programs, running on no-force mode... skipping...'%(blue('[T80S-scheduler]')))
+            return
+
+
+        self.out('%s Looking for something to do...'%(blue('T80S-scheduler')))
         site = self.site
         mjd = site.MJD()
         self.out('%s: MJD = %.3f @ %s'%(blue("[T80S-scheduler]"), mjd,site['name']))
@@ -651,6 +684,7 @@ class ChimeraT80Sched (ChimeraCLI):
         target = session.query(t80db.Targets).filter(t80db.Targets.id == program.tid).first()
 
         chimeraprogram = cdb.Program( name = target.name,
+                                      tid = program.id, # I will use tid to store the id of the program so I can log it latter!
                                       pi=program.pi,
                                       priority=program.priority,
                                       slewAt=program.slewAt )
@@ -939,9 +973,24 @@ class ChimeraT80Sched (ChimeraCLI):
         while True:
             event_is_set = e.wait()
             # Start scheduler when event is set
+            self.addProject()
             self.scheduler.start()
-            self.out('Event set')
             e.clear()
+
+    ############################################################################
+
+    def stop_at_event(self,e):
+        """Wait for the event to be set before doing anything"""
+
+        e.clear()
+        while True:
+            event_is_set = e.wait()
+            # Stop scheduler when event is set
+            self.scheduler.stop()
+            self.out('Event stop')
+            e.clear()
+
+    ############################################################################
 
 ################################################################################
 def main():
