@@ -515,6 +515,12 @@ class ChimeraT80Sched (ChimeraCLI):
     @action(help="Start the scheduler", helpGroup="RUN", actionGroup="RUN")
     def start(self, options):
 
+
+        self.mktimes(options)
+
+        self.out('%s: Observations start @ %s'%(blue("[T80S-scheduler]"),self.mjdStart))
+        self.out('%s: Observations end @ %s'%(blue("[T80S-scheduler]"),self.mjdEnd))
+
         e = threading.Event()
         t1 = threading.Thread(  name='waitStart',
                                 target=self.start_at_event,
@@ -574,7 +580,7 @@ class ChimeraT80Sched (ChimeraCLI):
                 self.out("=" * 40)
 
                 #self.addProject()
-
+                #if (self.mjdStart < self.site.MJD())
                 e.set()
 
                 #self.scheduler.control()
@@ -805,7 +811,7 @@ class ChimeraT80Sched (ChimeraCLI):
         site = self.site
 
         self.obsStart = site.sunset_twilight_end()
-        self.obsEnd = site.sunrise_twilight_begin()
+        self.obsEnd = site.sunrise_twilight_begin(self.obsStart)
 
         if opt.JDstart:
             self.obsStart = datetimeFromJD(opt.JDstart)
@@ -825,6 +831,8 @@ class ChimeraT80Sched (ChimeraCLI):
 
         self.lststart = site.LST(self.obsStart).toH()
         self.lstend = site.LST(self.obsEnd).toH()
+        self.mjdStart = site.MJD(self.obsStart)
+        self.mjdEnd =  site.MJD(self.obsEnd)
 
     ############################################################################
 
@@ -973,8 +981,16 @@ class ChimeraT80Sched (ChimeraCLI):
         while True:
             event_is_set = e.wait()
             # Start scheduler when event is set
-            self.addProject()
-            self.scheduler.start()
+            if self.mjdStart < self.site.MJD() <self.mjdEnd:
+                self.out('%s: Feeding and starting observation'%(blue("[T80S-scheduler]")))
+                self.addProject()
+                self.scheduler.start()
+            else:
+                self.out('%s: Now is outside night time...'%(blue("[T80S-scheduler]")))
+                self.out('%s: Observations start @ %s'%(blue("[T80S-scheduler]"),self.mjdStart))
+                self.out('%s: Observations end @ %s'%(blue("[T80S-scheduler]"),self.mjdEnd))
+                self.out('%s: Now is %s'%(blue("[T80S-scheduler]"),self.site.MJD()))
+
             e.clear()
 
     ############################################################################
