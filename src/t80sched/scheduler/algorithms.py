@@ -72,7 +72,7 @@ def ScheduleFunction(opt,*args,**kwargs):
 
             for itr in range(len(obsSlots)):
 
-                # this if is the key to multitarget blocks...
+                # this "if" is the key to multitarget blocks...
                 if obsSlots['blockid'][itr] == -1:
 
                     dateTime = datetimeFromJD(obsSlots['start'][itr])

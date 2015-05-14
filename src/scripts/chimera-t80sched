@@ -105,6 +105,25 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    @action(long="cleanObservingLog",
+            help="Delete entries on Observing Log database. If no date is specified swipe clean the log database. User can specify start/end dates, only start or end works as well.",
+            actionGroup="")
+    def cleanObservingLog(self,opt):
+
+        session = t80db.Session()
+
+        self.mktimes(opt)
+        # Query all obs logs entries
+
+        query = session.query(t80db.ObservingLog).filter(t80db.ObservingLog.time > self.obsStart,
+                                                         t80db.ObservingLog.time <= self.obsEnd)
+
+        for q in query:
+            session.delete(q)
+            session.commit()
+
+    ############################################################################
+
     @action(long="cleanQueue",
             help="Delete all scheduled blocks from specified project.",
             actionGroup="")
@@ -306,6 +325,46 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    @action(long="makeObservingLog",
+            help="Process entries on Observing Log database and generate charts and graphs with observing information. User can specify start/end dates, only start or end works as well.",
+            actionGroup="")
+    def makeObservingLog(self,opt):
+
+        import plotly.plotly as py
+        from plotly.graph_objs import Data,Scatter
+
+        session = t80db.Session()
+
+        self.mktimes(opt)
+
+        query = session.query(t80db.ObservingLog).filter(t80db.ObservingLog.time > self.obsStart,
+                                                         t80db.ObservingLog.time <= self.obsEnd)
+
+        tid = np.array([],dtype=np.int)
+
+        for q in query:
+            tid = np.append(tid,q.tid)
+            #self.out('%s'%q)
+
+        tid = np.unique(tid)
+
+        # site = self.site()
+        trace = []
+
+        for id in tid:
+            target = session.query(t80db.Targets).filter(t80db.Targets.id == id)[0]
+            time,secz = self.airmass(ra = target.RA,
+                                     dec = target.Dec,
+                                     start = self.obsStart,
+                                     end = self.obsEnd,
+                                     max = 3.0)
+            trace.append(Scatter([time,secz]))
+            #print target
+        data = Data(trace)
+        plot_url = py.plot(data, filename='airmass')
+
+    ############################################################################
+
     @action(long="showQueue",
             help="Show queue result for specified project.",
             actionGroup="")
@@ -368,6 +427,24 @@ class ChimeraT80Sched (ChimeraCLI):
 
 
     ############################################################################
+
+    @action(long="showObservingLog",
+            help="Show entries on Observing Log database. User can specify start/end dates, only start or end works as well.",
+            actionGroup="")
+    def showObservingLog(self,opt):
+
+        session = t80db.Session()
+
+        self.mktimes(opt)
+
+        query = session.query(t80db.ObservingLog).filter(t80db.ObservingLog.time > self.obsStart,
+                                                         t80db.ObservingLog.time <= self.obsEnd)
+
+        for q in query:
+            self.out('%s'%q)
+
+    ############################################################################
+
     @action(long="processQueue",
             help="Process queue like chimera will do during an observation.",
             actionGroup="")
@@ -423,8 +500,18 @@ class ChimeraT80Sched (ChimeraCLI):
             slewtime = slewtime if slewtime > _idle else 0 # if slewtime larger than idle time slewtime will be zero
             msg += ' | slewtime = %.5fm'%(slewtime*60.*60.)
             self.out('@ %.5f (%.5f): Acquiring %45s %s'%(otime,program.slewAt,program,msg))
+            log = t80db.ObservingLog(time=datetimeFromJD(otime+2400000.5,),
+                                     tid=program.tid,
+                                     name=program.name,
+                                     action='Simulation: Acquisition Start')
+            session.add(log)
             dt = (aplen/86.4e3) + slewtime + _idle
             otime+=dt
+            log = t80db.ObservingLog(time=datetimeFromJD(otime+2400000.5,),
+                         tid=program.tid,
+                         name=program.name,
+                         action='Simulation: Acquisition End')
+            session.add(log)
             appOpen+=aplen
             program.finished = True
             telPos = targetPos
@@ -610,6 +697,83 @@ class ChimeraT80Sched (ChimeraCLI):
             # callback for programs...
             self.out("%s: Scheduler state is '%s'. Waiting call for programs..."%(blue("[T80S-scheduler]"),
                                                                                 self.scheduler.state()))
+            self.wait(abort=False)
+
+    ############################################################################
+
+    @action(help="Monitor scheduler actions", helpGroup="RUN")
+    def monitor(self, options):
+
+
+        ########################################################################
+
+        @callback(self.localManager)
+        def programBeginClbk(program):
+            chimera_session = cdb.Session()
+            program = chimera_session.merge(program)
+            t80s_session = t80db.Session()
+            log = t80db.ObservingLog(time=dt.datetime.now(),
+                                     tid=program.tid,
+                                     name=program.name,
+                                     action='Program begin.')
+            self.out("=" * 40)
+            self.out("%s %s" % (blue("[program]"), program.name))
+
+        ########################################################################
+
+
+        @callback(self.localManager)
+        def programCompleteClbk(program, status, message=None):
+            session = Session()
+            program = session.merge(program)
+            if status == SchedulerStatus.OK:
+                self.out("%s %s %s" %
+                         (blue("[program]"), program.name, green(str(status))))
+            else:
+                self.out("%s %s %s (%s)" % (
+                    blue("[program]"), program.name, red(str(status)), red(str(message))))
+
+        ########################################################################
+
+        @callback(self.localManager)
+        def actionBeginClbk(action, message):
+            session = Session()
+            action = session.merge(action)
+            self.out("%s %s ..." % (blue("[action] "), message), end="")
+
+        ########################################################################
+
+        @callback(self.localManager)
+        def actionCompleteClbk(action, status, message=None):
+            session = Session()
+            action = session.merge(action)
+
+            if status == SchedulerStatus.OK:
+                self.out("%s" % green(str(status)))
+            else:
+                self.out("%s (%s)" % (red(str(status)), red(str(message))))
+
+        ########################################################################
+
+        @callback(self.localManager)
+        def stateChangedClbk(newState, oldState):
+            if newState == State.OFF:
+                self.out("=" * 40)
+                self.out("%s finished all programs" % blue("[scheduler]"))
+                self.out("=" * 40)
+                self.exit()
+
+        ########################################################################
+
+        self.scheduler.programBegin += programBeginClbk
+        self.scheduler.programComplete += programCompleteClbk
+        self.scheduler.actionBegin += actionBeginClbk
+        self.scheduler.actionComplete += actionCompleteClbk
+        self.scheduler.stateChanged += stateChangedClbk
+
+        if self.scheduler.state() == State.OFF:
+            self.out("%s no programs to do" % blue("[scheduler]"))
+        else:
             self.wait(abort=False)
 
     ############################################################################
@@ -1008,6 +1172,29 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    def airmass(self,ra,dec,start,end,dt=0.5,max=99.):
+
+        site = self.site
+
+        coords = Position.fromRaDec(ra,
+                                 dec)
+
+        timevec = np.array([])
+        amvec = np.array([])
+
+        for time in np.arange(start,end,dt.timedelta(hours=dt)):
+            lst = site.LST_inRads(time)
+            alt = float(site.raDecToAltAz(coords,lst).alt)
+            airmass = 1./np.cos(np.pi/2.-alt*np.pi/180.)
+            if airmass < max:
+                timevec = np.append(timevec,time)
+                amvec = np.append(amvec,airmass)
+                
+        return timevec,amvec
+
+
+    ############################################################################
+
 ################################################################################
 def main():
     cli = ChimeraT80Sched()
@@ -1020,4 +1207,4 @@ if __name__ == '__main__':
 
     main()
 
-    ################################################################################
+################################################################################

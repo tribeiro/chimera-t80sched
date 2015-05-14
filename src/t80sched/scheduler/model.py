@@ -148,6 +148,19 @@ class Program(Base):
         return "#%d %s pi:%s #actions: %d" % (self.id, self.name,
                                               self.pi, len(self.actions))
 
+class ObservingLog(Base):
+    __tablename__ = "observinglog"
+
+    id = Column(Integer, primary_key=True)
+    time = Column(DateTime, default=dt.datetime.today())
+    tid = Column(Integer, ForeignKey('targets.id'))
+    name = Column(String, ForeignKey("targets.name"))
+    action = Column(String)
+
+    def __str__(self):
+        return '%s [%s] Action: %s'%(self.time,
+                                     self.name,
+                                     self.action)
 class Action(Base):
 
     id         = Column(Integer, primary_key=True)
