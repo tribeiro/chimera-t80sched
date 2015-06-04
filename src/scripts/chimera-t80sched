@@ -331,7 +331,7 @@ class ChimeraT80Sched (ChimeraCLI):
     def makeObservingLog(self,opt):
 
         import plotly.plotly as py
-        from plotly.graph_objs import Data,Scatter
+        from plotly.graph_objs import Data,Scatter,Layout,Figure,YAxis,Line
 
         session = t80db.Session()
 
@@ -351,17 +351,63 @@ class ChimeraT80Sched (ChimeraCLI):
         # site = self.site()
         trace = []
 
+        color = {7 : 'red',
+                 1 : 'blue'}
+
         for id in tid:
             target = session.query(t80db.Targets).filter(t80db.Targets.id == id)[0]
-            time,secz = self.airmass(ra = target.RA,
-                                     dec = target.Dec,
+            time,alt = self.altitude(ra = target.targetRa,
+                                     dec = target.targetDec,
                                      start = self.obsStart,
                                      end = self.obsEnd,
-                                     max = 3.0)
-            trace.append(Scatter([time,secz]))
-            #print target
+                                     tdelta=1./30.)
+            trace.append(Scatter(x = time,
+                                 y = alt, #np.exp(1.-1./secz)
+                                 mode='lines',
+                                 line=Line(
+                                        color='red',
+                                        width=0.5
+                                        )
+                                 )
+                         )
+
+            targetObs = query.filter(t80db.ObservingLog.tid == id)
+            start = []
+            end = []
+
+            for obs in targetObs:
+                if 'Acquisition Start' in obs.action:
+                    start.append(obs.time)
+                elif 'Acquisition End' in obs.action:
+                    end.append(obs.time)
+            if len(start) != len(end):
+                self.err('Start/end of observations of target does not match')
+                continue
+
+            for i in range(len(start)):
+                time,alt = self.altitude(ra = target.targetRa,
+                                         dec = target.targetDec,
+                                         start = start[i],
+                                         end = end[i],
+                                         tdelta=1./60.)
+                trace.append(Scatter(x = time,
+                                     y = alt, #np.exp(1.-1./secz)
+                                     mode='lines',
+                                     line=Line(
+                                            color=color[int(targetObs[i].priority)],
+                                            width=1.0
+                                            ),
+                                     fill='tozeroy',
+                                     name=target.name
+                                     )
+                             )
+
+
         data = Data(trace)
-        plot_url = py.plot(data, filename='airmass')
+        layout = Layout(yaxis=YAxis(autorange='reversed'))
+        fig = Figure(data=data)#, layout=layout)
+        plot_url = py.plot(fig, filename='airmass')
+        #plot_url = py.plot(data, filename='airmass')
 
     ############################################################################
 
@@ -438,7 +484,7 @@ class ChimeraT80Sched (ChimeraCLI):
         self.mktimes(opt)
 
         query = session.query(t80db.ObservingLog).filter(t80db.ObservingLog.time > self.obsStart,
-                                                         t80db.ObservingLog.time <= self.obsEnd)
+                                                         t80db.ObservingLog.time <= self.obsEnd).order_by(t80db.ObservingLog.time)
 
         for q in query:
             self.out('%s'%q)
@@ -474,7 +520,7 @@ class ChimeraT80Sched (ChimeraCLI):
             #aP,aplen = self.getAlternateProgram(aprograms,time)
             #if aplen < 0:
             #    break
-
+            self.out('Requesting target @ %f'%otime)
             program = qExec.next(otime)
             if not program:
                 break
@@ -483,10 +529,17 @@ class ChimeraT80Sched (ChimeraCLI):
 
             #while 0 <  aplen/86.4e3 < idleTime:
             msg = ''
-            _idle = program.slewAt - otime
+            slewAt = float(program.slewAt)
+            _idle = slewAt - otime
+            if _idle*24.*60.*60. < aplen:
+                slewAt = otime
+                _idle = 0.
+            # print slewAt,otime
+            stime = otime
             if _idle > 1e-4:
                 msg += '[info: Program slew %.3fm in the future. waiting...]'%( (_idle)*24.*60. )
                 idle += _idle
+                stime+=_idle
             elif _idle < -1e-4:
                 msg += '[info: Program slew %.3fm in the past. Slewing now...]'%  ( (_idle)*24.*60. )
 
@@ -499,19 +552,25 @@ class ChimeraT80Sched (ChimeraCLI):
                 slewtime = np.float(adist.toAS())/60./60./86.4e3 # consider 1 arcmin / second
             slewtime = slewtime if slewtime > _idle else 0 # if slewtime larger than idle time slewtime will be zero
             msg += ' | slewtime = %.5fm'%(slewtime*60.*60.)
-            self.out('@ %.5f (%.5f): Acquiring %45s %s'%(otime,program.slewAt,program,msg))
-            log = t80db.ObservingLog(time=datetimeFromJD(otime+2400000.5,),
+            self.out('@ %.5f (%.5f): Acquiring %45s %s'%(otime,slewAt,program,msg))
+            log = t80db.ObservingLog(time=datetimeFromJD(stime+2400000.5,),
                                      tid=program.tid,
                                      name=program.name,
+                                     priority=program.priority,
                                      action='Simulation: Acquisition Start')
             session.add(log)
-            dt = (aplen/86.4e3) + slewtime + _idle
-            otime+=dt
-            log = t80db.ObservingLog(time=datetimeFromJD(otime+2400000.5,),
+            session.commit()
+
+            log = t80db.ObservingLog(time=datetimeFromJD(stime+(aplen/86.4e3)+2400000.5,),
                          tid=program.tid,
                          name=program.name,
+                         priority=program.priority,
                          action='Simulation: Acquisition End')
             session.add(log)
+
+            dt = (aplen/86.4e3) + slewtime + _idle
+            otime+=dt
+
             appOpen+=aplen
             program.finished = True
             telPos = targetPos
@@ -1019,7 +1078,7 @@ class ChimeraT80Sched (ChimeraCLI):
 
         session.commit()
 
-        return tottime.min()
+        return tottime.min()/2.
 
     ############################################################################
 
@@ -1172,7 +1231,7 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
-    def airmass(self,ra,dec,start,end,dt=0.5,max=99.):
+    def altitude(self,ra,dec,start,end,tdelta=0.5,minA=10.):
 
         site = self.site
 
@@ -1182,14 +1241,18 @@ class ChimeraT80Sched (ChimeraCLI):
         timevec = np.array([])
         amvec = np.array([])
 
-        for time in np.arange(start,end,dt.timedelta(hours=dt)):
+        time = start
+        while time < end:
+        #for time in range(start,end,dt.timedelta(hours=tdelta)):
+            #print type(time)
             lst = site.LST_inRads(time)
             alt = float(site.raDecToAltAz(coords,lst).alt)
-            airmass = 1./np.cos(np.pi/2.-alt*np.pi/180.)
-            if airmass < max:
+            # airmass = 1./np.cos(np.pi/2.-alt*np.pi/180.)
+            if minA < alt <= 90.:
                 timevec = np.append(timevec,time)
-                amvec = np.append(amvec,airmass)
-                
+                amvec = np.append(amvec,alt)
+            time += dt.timedelta(hours=tdelta)
+
         return timevec,amvec
 
 

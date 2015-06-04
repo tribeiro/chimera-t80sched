@@ -33,7 +33,7 @@ class QueueScheduler ():
 
     def next (self, nowmjd=None):
 
-        #session = Session()
+        session = Session()
 
         if not nowmjd:
             nowmjd=self.site.MJD()
@@ -50,14 +50,22 @@ class QueueScheduler ():
         priority = plist[0]
         program,plen = self.getProgram(nowmjd,plist[0])
 
+        if program:
+            program = session.merge(program)
+
         if program and ( (not program.slewAt) and (self.checkConditions(program,nowmjd))):
             # Program should be done right away!
             return program
+        elif program:
+            log.debug('Current program length: %.2f m. Slew@: %.3f'%(plen/60.,program.slewAt))
 
         for p in plist[1:]:
 
             # Get program and program duration (lenght)
+
             aprogram,aplen = self.getProgram(nowmjd,p)
+
+            aprogram = session.merge(aprogram)
 
             if not aprogram:
                 continue
@@ -65,18 +73,27 @@ class QueueScheduler ():
             if not program:
                 program = aprogram
 
-            if not self.checkConditions(aprogram,program.slewAt):
+            if not self.checkConditions(aprogram,aprogram.slewAt):
                 # if condition is False, project cannot be executed. Go to next in the list
                 continue
 
+            log.debug('Current program length: %.2f m. Slew@: %.3f'%(aplen/60.,aprogram.slewAt))
             #return program
             #if aplen < 0 and program:
             #	log.debug('Using normal program (aplen < 0)...')
             #	return program
 
             # If alternate program fits will send it instead
+
             waittime=(program.slewAt-nowmjd)*86.4e3
-            if waittime>aplen:
+
+            if waittime < 0:
+                waittime = 0
+
+            log.debug('Wait time is: %.2f m'%(waittime/60.))
+
+            if waittime>aplen or waittime > 2.*plen:
+            #if aprogram.slewAt+aplen/86.4e3 < program.slewAt:
                 log.debug('Choose program with priority %i'%p)
                 # put program back with same priority
                 #self.rq.put((prt,program))
@@ -91,8 +108,7 @@ class QueueScheduler ():
             #    log.debug('Choose program with priority %i'%p)
             #    return program
 
-
-        if not self.checkConditions(program,program.slewAt):
+        if program and not self.checkConditions(program,program.slewAt):
             # if project cannot be executed return nothing.
             # [TO-CHECK] What the scheduler will do? should sleep for a while and
             # [TO-CHECK] try again.
@@ -126,9 +142,11 @@ class QueueScheduler ():
 
         session = Session()
 
+        log.debug('Looking for program with priority %i to observe @ %.3f '%(priority,nowmjd))
+
         program1 = session.query(Program).filter(Program.finished == False).filter(Program.priority == priority).filter(Program.slewAt > nowmjd).order_by(Program.slewAt).first()
 
-        program2 = session.query(Program).filter(Program.finished == False).filter(Program.priority == priority).filter(Program.slewAt < nowmjd).order_by(Program.slewAt.desc()).first()
+        program2 = session.query(Program).filter(Program.finished == False).filter(Program.priority == priority).filter(Program.slewAt <= nowmjd).order_by(Program.slewAt.desc()).first()
 
         if not program1 and not program2:
             log.debug('No program in alternate queue %i'%priority)
@@ -218,7 +236,7 @@ class QueueScheduler ():
             log.debug('\tairmass:%.3f'%airmass)
             pass
         else:
-            log.warning('Target out of range airmass... (%f < %f < %f)'%(blockpar.minairmass, airmass, blockpar.maxairmass))
+            log.warning('Target %s out of range airmass... (%f < %f < %f)'%(target, blockpar.minairmass, airmass, blockpar.maxairmass))
             return False
 
         # 2) check moon Brightness
