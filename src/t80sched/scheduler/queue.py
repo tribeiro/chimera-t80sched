@@ -18,6 +18,7 @@ from t80sched.scheduler.model import Session, Program, Targets, BlockPar
 import logging #as log
 
 log = logging.getLogger("chimera.controllers.scheduler.t80sched")
+log.setLevel(logging.DEBUG)
 
 import numpy as np
 
@@ -57,7 +58,7 @@ class QueueScheduler ():
             # Program should be done right away!
             return program
         elif program:
-            log.debug('Current program length: %.2f m. Slew@: %.3f'%(plen/60.,program.slewAt))
+            log.warning('Current program length: %.2f m. Slew@: %.3f'%(plen/60.,program.slewAt))
 
         for p in plist[1:]:
 
@@ -77,7 +78,7 @@ class QueueScheduler ():
                 # if condition is False, project cannot be executed. Go to next in the list
                 continue
 
-            log.debug('Current program length: %.2f m. Slew@: %.3f'%(aplen/60.,aprogram.slewAt))
+            log.warning('Current program length: %.2f m. Slew@: %.3f'%(aplen/60.,aprogram.slewAt))
             #return program
             #if aplen < 0 and program:
             #	log.debug('Using normal program (aplen < 0)...')
@@ -90,11 +91,11 @@ class QueueScheduler ():
             if waittime < 0:
                 waittime = 0
 
-            log.debug('Wait time is: %.2f m'%(waittime/60.))
+            log.warning('Wait time is: %.2f m'%(waittime/60.))
 
             if waittime>aplen or waittime > 2.*plen:
             #if aprogram.slewAt+aplen/86.4e3 < program.slewAt:
-                log.debug('Choose program with priority %i'%p)
+                log.warning('Choose program with priority %i'%p)
                 # put program back with same priority
                 #self.rq.put((prt,program))
                 # return alternate program
@@ -114,7 +115,7 @@ class QueueScheduler ():
             # [TO-CHECK] try again.
             return None
 
-        log.debug('Choose program with priority %i'%priority)
+        log.warning('Choose program with priority %i'%priority)
         return program
         '''
         else:
@@ -257,7 +258,9 @@ class QueueScheduler ():
         moonDist = raDec.angsep(moonRaDec)
 
         if moonDist < blockpar.minmoonDist:
-            log.warning('Object to close to the moon... (moonDist = %f | minmoonDist = %f)'%(moonDist,
+            log.warning('Object to close to the moon... Target@ %s / Moon@ %s (moonDist = %f | minmoonDist = %f)'%(raDec,
+                                                                                                                   moonRaDec,
+                                                                                                                   moonDist,
                                                                                              blockpar.minmoonDist))
             return False
         else:

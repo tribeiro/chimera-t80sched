@@ -379,6 +379,8 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                 allocateSlot = np.array([],
                                           dtype= slotDtype)
 
+                start = nightstart if start < nightstart else start
+                end = nightend if end > nightend else end
                 log.debug('Trying to allocate %s'%(radecArray[nblock]))
                 nballoc_tmp = nballoc
                 for dam in dairMass:
@@ -388,7 +390,7 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                     niter = 0
                     converged = True
                     oldam = am
-                    while np.abs(am-dam) > 1e-2:
+                    while np.abs(am-dam) > 1e-1:
                         time = (start+end)/2.
                         lst_start = site.LST_inRads(datetimeFromJD(start)) # in radians
                         lst_end = site.LST_inRads(datetimeFromJD(end)) # in radians
@@ -400,7 +402,8 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                         am = Airmass(float(site.raDecToAltAz(radecArray[nblock],
                                                              lst).alt))
                         niter += 1
-                        log.debug('%.3f | %.3f | %.3f'%(amStart,am,amEnd))
+                        log.debug('%.5f %.3f | %.5f %.3f | %.5f %.3f'%(start,amStart,time,am,end,amEnd))
+
                         if amStart > amEnd:
                             if am > dam:
                                 start = time
@@ -441,6 +444,9 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                         # Check that it comply with block constraints
                         # Airmass should be ok since allocation is airmass based
                         # so we only need to check moon distance and brightness
+                        # moonRaDec = self.site.altAzToRaDec(self.site.moonpos(dateTime),lst)
+                        # moonDist = raDec.angsep(moonRaDec)
+
                         _dateTime = datetimeFromJD(time)
                         lst = site.LST_inRads(_dateTime)
                         moonpos = site.moonpos(_dateTime)
@@ -454,19 +460,30 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                             moonBrightness = site.moonphase(_dateTime)*100.
                             s_target = targets[:][nblock]
 
-
-                            if not ((radecArray[nblock].angsep(moonRaDec) < s_target[1].minmoonDist or
-                                s_target[1].minmoonBright < moonBrightness < s_target[1].maxmoonBright)):
+                            if (radecArray[nblock].angsep(moonRaDec) < s_target[1].minmoonDist) or not (s_target[1].minmoonBright < moonBrightness < s_target[1].maxmoonBright):
                                 log.warning('Cannot allocate target due to moon restrictions...')
+                                log.debug("Moon Conditions @ %s: Target@ %s | Moon@: %s | AngSep: %.2f (min.: %.2f) |Moon Brightness: %.2f (%.2f:%.2f) "%(time,
+                                                                                                           radecArray[nblock],
+                                                                                                           moonRaDec,
+                                                                                                           radecArray[nblock].angsep(moonRaDec),
+                                                                                                        s_target[1].minmoonDist,
+                                                                                           moonBrightness,
+                                                                                           s_target[1].minmoonBright,
+                                                                                           s_target[1].maxmoonBright))
                                 break
 
-                        allocateSlot = np.append(allocateSlot,
-                                                 np.array([(time,
-                                                            time+blockDuration[nblock]/60./60./24.,
-                                                            nballoc_tmp,
-                                                            blockidList[nblock],
-                                                            True)],
-                                                          dtype=slotDtype))
+
+                        if nightstart < time < nightend:
+                            allocateSlot = np.append(allocateSlot,
+                                                     np.array([(time,
+                                                                time+blockDuration[nblock]/60./60./24.,
+                                                                nballoc_tmp,
+                                                                blockidList[nblock],
+                                                                True)],
+                                                              dtype=slotDtype))
+                        else:
+                            log.warning("Wrong time stamp. time: %.4f (%.4f/%.4f)"%(time,nightstart,nightend))
+                            break
                         nballoc_tmp+=1
 
                     else:
