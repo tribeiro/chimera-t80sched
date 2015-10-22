@@ -15,6 +15,7 @@ import datetime as dt
 from sqlalchemy import (or_,and_, desc, asc)
 
 from chimera.core.cli import ChimeraCLI, action, ParameterType
+from chimera.core.constants import DEFAULT_PROGRAM_DATABASE
 from chimera.core.callback import callback
 from chimera.util.position import Position
 from chimera.util.output import blue, green, red
@@ -102,6 +103,159 @@ class ChimeraT80Sched (ChimeraCLI):
                                 default=True,type=ParameterType.BOOLEAN,
                                 help="Clean chimera database at start.",
                                 metavar="SCHEDULER"))
+
+    @action(long="new",
+            help="Generate a new database from a text file (excluding all programs already in database)",
+            helpGroup="DB",
+            actionGroup="DB")
+    def newDatabase(self, options):
+
+        # save a copy
+        if os.path.exists(DEFAULT_PROGRAM_DATABASE):
+            shutil.copy(DEFAULT_PROGRAM_DATABASE, "%s.%s.bak" %
+                        (DEFAULT_PROGRAM_DATABASE, time.strftime("%Y%m%d%H%M%S")))
+
+        # delete all programs
+        session = cdb.Session()
+        programs = session.query(cdb.Program).all()
+        for program in programs:
+            session.delete(program)
+        session.commit()
+
+        self.generateDatabase(options)
+
+    @action(long="append", help="Append programs to database from a text file",
+            helpGroup="DB", actionGroup="DB")
+    def appendDatabase(self, options):
+        self.generateDatabase(options)
+
+    def generateDatabase(self, options):
+
+        f = None
+        try:
+            f = open(options.filename, "r")
+        except:
+            self.exit("Could not find '%s'." % options.filename)
+
+        session = cdb.Session()
+
+        lineRe = re.compile('(?P<coord>(?P<ra>[\d:-]+)\s+(?P<dec>\+?[\d:-]+)\s+(?P<epoch>[\dnowNOWJjBb\.]+)\s+)?(?P<imagetype>[\w]+)'
+                            '\s+(?P<objname>\'([^\\n\'\\\\]|\\\\.)*\'|"([^\\n"\\\\]|\\\\.)*"|([^ \\n"\\\\]|\\\\.)*)\s+(?P<exposures>[\w\d\s:\*\(\),]*)'
+                            '\s+(?P<AG>[\w\d\s\*\(,\.\)]+)?')
+        programs = []
+
+        for i, line in enumerate(f):
+
+            if line.startswith("#"):
+                continue
+            if len(line) == 1:
+                continue
+
+            matchs = lineRe.search(line)
+
+            if matchs is None:
+                print "Couldn't process line #%d" % i
+                continue
+
+            params = matchs.groupdict()
+
+            position = None
+            objname = None
+
+            if params.get("coord", None):
+                position = Position.fromRaDec(
+                    params['ra'], params['dec'], params['epoch'])
+
+            imagetype = params['imagetype'].upper()
+            objname = params['objname'].replace("\"", "")
+
+            autoguider = None
+
+            if params.get("AG",None):
+                autoguider = params['AG'].replace('(','').replace(')','').replace('\n','').split(',')
+                for i,typecheck in enumerate((float,float,int,str,str,bool,int)):
+                    try:
+                        autoguider[i] = typecheck(autoguider[i])
+                    except:
+                        autoguider[i] = None
+
+            multiplier, exps = params['exposures'].split("*")
+            try:
+                multiplier = int(multiplier)
+            except ValueError:
+                multiplier = 1
+
+            exps = exps.replace("(", "").replace(")", "").strip().split(",")
+
+            for i in range(multiplier):
+
+                program = cdb.Program(
+                    name="%s-%03d" % (objname.replace(" ", ""), i))
+
+                self.out("# program: %s" % program.name)
+
+                if imagetype == "OBJECT":
+                    if position:
+                        program.actions.append(cdb.Point(targetRaDec=position))
+                    else:
+                        program.actions.append(cdb.Point(targetName=objname))
+
+                    if autoguider is not None:
+                        program.actions.append(cdb.AutoGuide(min_exptime=autoguider[0],
+                                                         max_exptime=autoguider[1],
+                                                         ntries     =autoguider[2],
+                                                         filter     =autoguider[3],
+                                                         binning    =autoguider[4],
+                                                         windowCCD  =autoguider[5],
+                                                         box        =autoguider[6]))
+
+                if imagetype == "FLAT" and i == 0:
+                    site = self._remoteManager.getProxy("/Site/0")
+                    flatPosition = Position.fromAltAz(
+                        site['flat_alt'], site['flat_az'])
+                    program.actions.append(cdb.Point(targetAltAz=flatPosition))
+
+                # if i == 0:
+                #    program.actions.append(AutoFocus(start=1500, end=3000, step=250, filter="R", exptime=10))
+                #    program.actions.append(PointVerify(here=True))
+
+                for exp in exps:
+                    if exp.count(":") > 1:
+                        filter, exptime, frames = exp.strip().split(":")
+                    else:
+                        filter, exptime = exp.strip().split(":")
+                        frames = 1
+
+                    if imagetype in ("OBJECT", "FLAT"):
+                        shutter = "OPEN"
+                    else:
+                        shutter = "CLOSE"
+
+                    if imagetype == "BIAS":
+                        exptime = 0
+
+                    if imagetype in ("BIAS", "DARK"):
+                        filter = None
+
+                    self.out("%s %s %s filter=%s exptime=%s frames=%s" % (
+                        imagetype, objname, str(position), filter, exptime, frames))
+
+                    program.actions.append(cdb.Expose(shutter=shutter,
+                                                  filename="%s-$DATE-$TIME" % objname.replace(
+                                                      " ", ""),
+                                                  filter=filter,
+                                                  frames=frames,
+                                                  exptime=exptime,
+                                                  imageType=imagetype,
+                                                  objectName=objname))
+
+                self.out("")
+                programs.append(program)
+
+        session.add_all(programs)
+        session.commit()
+
+        self.out("Restart the scheduler to run it with the new database.")
 
     ############################################################################
 
@@ -274,6 +428,7 @@ class ChimeraT80Sched (ChimeraCLI):
         for sAL in uSAL:
 
             nquery = tList.filter(t80db.BlockPar.schedalgorith == sAL)
+            # Todo: Add autoguider action when requested
 
             qFunction = algorithms.ScheduleFunction(sAL,
                                                     obsStart=obsStart,

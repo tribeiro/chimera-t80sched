@@ -7,12 +7,13 @@
 #from chimera.controllers.scheduler.ischeduler import IScheduler
 #from chimera.controllers.scheduler.model import Session, Program
 from chimera.util.position import Position
-
 from chimera.core.site import (Site, datetimeFromJD)
+from chimera.controllers.scheduler.model import Session as cSession
+from chimera.controllers.scheduler.model import Program as cProgram
 
 from t80sched.scheduler.model import Session, Program, Targets, BlockPar
 
-#from sqlalchemy import (desc, asc)
+from sqlalchemy import (desc, asc)
 
 #import chimera.core.log
 import logging #as log
@@ -26,13 +27,39 @@ class fakeSM():
     def seeing(self,time=None):
         return -1
 
+from Queue import Queue
+
 class QueueScheduler ():
 
     def __init__ (self,site):
         self.site = site
         self.seeingmonitor = fakeSM()
+        self.rq = None
+        self.machine = None
+
+    def reschedule (self, machine):
+
+        self.machine = machine
+        self.rq = Queue(-1)
+
+        session = cSession()
+        programs = session.query(cProgram).order_by(desc(cProgram.priority)).filter(cProgram.finished == False).all()
+
+        if not programs:
+            return
+
+        log.debug("rescheduling, found %d runnable programs" % len(list(programs)))
+
+        for program in programs:
+            self.rq.put(program)
+
+        machine.wakeup()
+
 
     def next (self, nowmjd=None):
+
+        if not self.rq.empty():
+            return self.rq.get()
 
         session = Session()
 

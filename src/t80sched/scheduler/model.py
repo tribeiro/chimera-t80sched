@@ -271,13 +271,8 @@ class AutoGuide(Action):
     windowCCD  = Column(Boolean, default=True)
     box        = Column(Integer, default=None)
 
-    stop       = Column(Boolean, default=False) # Add an action with stop = True at the end of each observing sequence
-
     def __str__ (self):
-        if self.stop:
-            return "AutoGuide: End a running autoguider instance."
-        else:
-            return "AutoGuide: exptime=[%f:%f] ntries=%i filter=%s binning=%s windowCCD=%s box=%s"%(self.min_exptime,
+        return "AutoGuide: exptime=[%f:%f] ntries=%i filter=%s binning=%s windowCCD=%s box=%s"%(self.min_exptime,
                                                                                                     self.max_exptime,
                                                                                                     self.ntries,
                                                                                                     self.filter,
