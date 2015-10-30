@@ -370,64 +370,83 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
                 start = nightstart
                 end = nightend
 
-                if olst > lstmid:
-                    end = midnight+(olst-lstmid)*12./np.pi/24.
-                else:
-                    start = midnight-(lstmid-olst)*12./np.pi/24.
-
+                # if olst > lstmid:
+                #     end = midnight+(olst-lstmid)*12./np.pi/24.
+                # else:
+                #     start = midnight-(lstmid-olst)*12./np.pi/24.
+                #
                 # find times where object is at desired airmasses
                 allocateSlot = np.array([],
                                           dtype= slotDtype)
-
-                start = nightstart if start < nightstart else start
-                end = nightend if end > nightend else end
+                #
+                # start = nightstart if start < nightstart else start
+                # end = nightend if end > nightend else end
                 log.debug('Trying to allocate %s'%(radecArray[nblock]))
                 nballoc_tmp = nballoc
+                # lst_start = site.LST_inRads(datetimeFromJD(start)) # in radians
+                # lst_end = site.LST_inRads(datetimeFromJD(end)) # in radians
+                time_grid = np.arange(start,end,1./24./2.) # grid with 1/2 hour
+                am = np.array([Airmass(float(site.raDecToAltAz(radecArray[nblock],
+                                                         site.LST_inRads(datetimeFromJD(time))).alt)) for time in time_grid])
+
+                log.debug("AM_GRID SIZE: %i"%(len(am)))
                 for dam in dairMass:
 
-                    time = (start+end)/2.
-                    am = dam+1.
-                    niter = 0
                     converged = True
-                    oldam = am
-                    while np.abs(am-dam) > 1e-1:
-                        time = (start+end)/2.
-                        lst_start = site.LST_inRads(datetimeFromJD(start)) # in radians
-                        lst_end = site.LST_inRads(datetimeFromJD(end)) # in radians
-                        lst = site.LST_inRads(datetimeFromJD(time)) # in radians
-                        amStart = Airmass(float(site.raDecToAltAz(radecArray[nblock],
-                                                             lst_start).alt))
-                        amEnd = Airmass(float(site.raDecToAltAz(radecArray[nblock],
-                                     lst_end).alt))
-                        am = Airmass(float(site.raDecToAltAz(radecArray[nblock],
-                                                             lst).alt))
-                        niter += 1
-                        log.debug('%.5f %.3f | %.5f %.3f | %.5f %.3f'%(start,amStart,time,am,end,amEnd))
 
-                        if amStart > amEnd:
-                            if am > dam:
-                                start = time
-                            else:
-                                end = time
-                        else:
-                            if am > dam:
-                                end = time
-                            else:
-                                start = time
-
-                        if niter > 1000:
-                            log.error('Could not converge on search for airmass...')
-                            converged = False
-                            break
-                        elif abs(oldam-am) < 1e-5:
-                            log.error('Could not converge on search for airmass...')
-                            converged = False
-                            break
-
-                        oldam = am
-
-                    if not converged:
+                    # if lower airmass is larger than desired airmass, break here
+                    if am.min() - dam > 1e-3:
+                        log.debug("Lower airmass (%.3f) if higher than desired (%.3f)."%(am.min(), dam))
+                        converged = False
                         break
+                    iam = np.argmin(np.abs(am - dam))
+                    time = time_grid[iam]
+
+                    if np.abs(am[iam]-dam) > 1e-1:
+                        log.debug("Selected airmass (%.3f) too far from desired (%.3f)."%(am[iam],dam))
+                        converged = False
+                        break
+
+                    log.debug("Time: %.4f airmass: %.3f (desired %.3f)"%(time,am[iam],dam))
+
+                    # while np.abs(am-dam) > 1e-1:
+                    #     time = (start+end)/2.
+                    #     lst_start = site.LST_inRads(datetimeFromJD(start)) # in radians
+                    #     lst_end = site.LST_inRads(datetimeFromJD(end)) # in radians
+                    #     lst = site.LST_inRads(datetimeFromJD(time)) # in radians
+                    #     amStart = Airmass(float(site.raDecToAltAz(radecArray[nblock],
+                    #                                          lst_start).alt))
+                    #     amEnd = Airmass(float(site.raDecToAltAz(radecArray[nblock],
+                    #                  lst_end).alt))
+                    #     am = Airmass(float(site.raDecToAltAz(radecArray[nblock],
+                    #                                          lst).alt))
+                    #     niter += 1
+                    #     log.debug('%.5f %.3f | %.5f %.3f | %.5f %.3f'%(start,amStart,time,am,end,amEnd))
+                    #
+                    #     if amStart > amEnd:
+                    #         if am > dam:
+                    #             start = time
+                    #         else:
+                    #             end = time
+                    #     else:
+                    #         if am > dam:
+                    #             end = time
+                    #         else:
+                    #             start = time
+                    #
+                    #     if niter > 1000:
+                    #         log.error('Could not converge on search for airmass...')
+                    #         converged = False
+                    #         break
+                    #     elif abs(oldam-am) < 1e-5:
+                    #         log.error('Could not converge on search for airmass...')
+                    #         converged = False
+                    #         break
+                    #
+                    #     oldam = am
+
+                    # if not converged:
+                    #     break
 
                     filled = False
                     # Found time, try to allocate

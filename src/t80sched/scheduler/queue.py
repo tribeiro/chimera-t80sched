@@ -24,8 +24,12 @@ log.setLevel(logging.DEBUG)
 import numpy as np
 
 class fakeSM():
+    value = -1
+    def setSeeing(self,value):
+        self.value = value
+
     def seeing(self,time=None):
-        return -1
+        return self.value
 
 from Queue import Queue
 
@@ -58,8 +62,9 @@ class QueueScheduler ():
 
     def next (self, nowmjd=None):
 
-        if not self.rq.empty():
-            return self.rq.get()
+        if self.rq is not None:
+            if not self.rq.empty():
+                return self.rq.get()
 
         session = Session()
 

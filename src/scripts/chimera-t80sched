@@ -331,6 +331,43 @@ class ChimeraT80Sched (ChimeraCLI):
 
     ############################################################################
 
+    @action(long="summary",
+            help="Show summary of current scheduler status.",
+            actionGroup="")
+    def summary(self,opt):
+
+        session = t80db.Session()
+
+        allpid = [ (p.pid,p.priority) for p in session.query(t80db.Projects)]
+
+        self.out("="*40)
+        # Check night start and end
+        self.mktimes(opt)
+        obsStart = self.obsStart
+        obsEnd = self.obsEnd
+        lststart = self.lststart
+        lstend = self.lstend
+
+        self.out('- Observation start @ %s | LST = %4.1f h'%(str(obsStart)[:19],lststart))
+        self.out('- Observation end   @ %s | LST = %4.1f h'%(str(obsEnd)[:19],lstend))
+
+        self.out("="*40)
+        # Show available projects in the database
+        if len(allpid) > 0:
+            prep1,prep2 = ("are","s") if len(allpid) > 1 else ("is","")
+            self.out("- There %s %i project%s in the database"%(prep1,len(allpid),prep2))
+            for pid in allpid:
+                sinfo = "(scheduled)" if self.checkQueue(pid[0]) else ""
+                self.out("-- %s: priority %i %s"%(pid[0],pid[1],sinfo))
+        else:
+            self.out("- There are no projects in the database")
+
+
+        self.out("="*40)
+        # Show information about scheduled projects
+
+    ############################################################################
+
     @action(long="makeQueue",
             help="Select targets from specified project to be observed. ",
             actionGroup="")
@@ -545,6 +582,7 @@ class ChimeraT80Sched (ChimeraCLI):
                                          start = start[i],
                                          end = end[i],
                                          tdelta=1./60.)
+
                 trace.append(Scatter(x = time,
                                      y = alt, #np.exp(1.-1./secz)
                                      mode='lines',
@@ -1191,17 +1229,17 @@ class ChimeraT80Sched (ChimeraCLI):
         self.obsStart = site.sunset_twilight_end()
         self.obsEnd = site.sunrise_twilight_begin(self.obsStart)
 
-        if opt.JDstart:
+        if opt.JDstart is not None:
             self.obsStart = datetimeFromJD(opt.JDstart)
-        elif opt.dstart:
+        elif opt.dstart is not None:
             day,hour = opt.dstart.split('-')
             yy,mm,dd = [int(val) for val in day.split('/')]
             hh,mi,ss = [int(val) for val in hour.split(':') ]
             self.obsStart = dt.datetime(yy,mm,dd,hh,mi,ss)
 
-        if opt.JDend:
+        if opt.JDend is not None:
             self.obsEnd = datetimeFromJD(opt.JDend)
-        elif opt.dend:
+        elif opt.dend is not None:
             day,hour = opt.dend.split('-')
             yy,mm,dd = [int(val) for val in day.split('/')]
             hh,mi,ss = [int(val) for val in hour.split(':') ]
