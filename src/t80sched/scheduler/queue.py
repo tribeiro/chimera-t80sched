@@ -94,9 +94,9 @@ class QueueScheduler ():
 
         for p in plist[1:]:
 
-            # Get program and program duration (lenght)
+            # Get program and program duration (length)
 
-            aprogram,aplen = self.getProgram(nowmjd,p)
+            aprogram, aplen = self.getProgram(nowmjd,p)
 
             aprogram = session.merge(aprogram)
 
@@ -111,10 +111,10 @@ class QueueScheduler ():
                 continue
 
             log.warning('Current program length: %.2f m. Slew@: %.3f'%(aplen/60.,aprogram.slewAt))
-            #return program
-            #if aplen < 0 and program:
-            #	log.debug('Using normal program (aplen < 0)...')
-            #	return program
+            # return program
+            # if aplen < 0 and program:
+            # 	log.debug('Using normal program (aplen < 0)...')
+            # 	return program
 
             # If alternate program fits will send it instead
 

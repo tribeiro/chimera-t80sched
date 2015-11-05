@@ -274,6 +274,8 @@ class SetupDB(ChimeraCLI):
         # minimum required entries in input file
         reqpar = ['ra', 'dec']
 
+        coord = True
+
         givedEntries = {}
 
         for name in targets.dtype.names:
@@ -281,10 +283,14 @@ class SetupDB(ChimeraCLI):
 
         for r in reqpar:
             if not r in givedEntries.keys():
+                coord = False
+                continue
+
+        if not ('type' in givedEntries.keys() or coord):
                 self.err(red('*') + 'Required parameter, %s, missing from input file...' % r)
                 return -1
 
-        # aditional entries
+        # additional entries
         addpar = {'name': 'name', 'type': 'type', 'mag': 'targetMag',
                   'epoch': 'targetEpoch',
                   'magfilter': 'magFilter', 'link': 'link'}
@@ -294,17 +300,17 @@ class SetupDB(ChimeraCLI):
         for i in range(len(targets)):
 
             p = None
-            try:
-                p = Position.fromRaDec(str(targets['RA'][i]),
-                                       str(targets['DEC'][i]))
-            except ValueError:
-                self.err(red('*') + 'Object in line %i has invalid coordinates (%s,%s). Skipping...' % (
-                i, targets['RA'][i], targets['DEC'][i]))
-                pass
-            except:
-                raise
+            if coord:
+                try:
+                    p = Position.fromRaDec(str(targets['RA'][i]),
+                                           str(targets['DEC'][i]))
+                except ValueError:
+                    self.err(red('*') + 'Object in line %i has invalid coordinates (%s,%s). Skipping...' % (
+                    i, targets['RA'][i], targets['DEC'][i]))
+                    pass
+                except:
+                    raise
 
-            if p:
                 tpar = {'targetRa': p.ra.H,
                         'targetDec': p.dec.D}
                 for pname in addpar.keys():
@@ -318,6 +324,20 @@ class SetupDB(ChimeraCLI):
                 session.add(target)
 
                 session.commit()
+            else:
+                tpar = { }
+                for pname in addpar.keys():
+                    if pname in givedEntries.keys():
+                        tpar[addpar[pname]] = targets[givedEntries[pname]][i]
+
+                target = Targets(**tpar)
+
+                self.out('--Adding %s...' % (target.name))
+
+                session.add(target)
+
+                session.commit()
+
 
         self.out('-Done')
         return 0

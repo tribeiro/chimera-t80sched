@@ -448,9 +448,17 @@ class ChimeraT80Sched (ChimeraCLI):
 
 
         if len(tList[:]) == 0:
-            self.out(blue('+')+'No targets available from this project this night...')
-            session.commit()
-            return -1
+            tList = session.query(t80db.ObsBlock,t80db.BlockPar,t80db.Targets,t80db.BlockConfig).filter(t80db.ObsBlock.pid == FLAG,
+                                                                                                        t80db.BlockConfig.pid == FLAG,
+                                                                                                        t80db.BlockPar.pid == FLAG,
+                                                                                                        t80db.ObsBlock.scheduled==False,
+                                                                                                        t80db.ObsBlock.observed==False,
+                                                                                                        t80db.Targets.type != "OBJECT").join(t80db.BlockPar).join(t80db.Targets).join(t80db.BlockConfig).order_by(t80db.ObsBlock.blockid)
+
+            if len(tList[:]) == 0:
+                self.out(blue('+')+'No targets available from this project this night...')
+                session.commit()
+                return -1
         self.out('-Found %i suitable targets...'%(len(tList[:])))
 
         ## Separate observing blocks by scheduling algoriths
@@ -1167,7 +1175,7 @@ class ChimeraT80Sched (ChimeraCLI):
                     flatPosition = Position.fromAltAz(site['flat_alt'], site['flat_az'])
                     program.actions.append(t80db.Point(targetAltAz=flatPosition))
                 else:
-                    self.out(blue('+')+'No target to point at...')
+                    self.out(blue('+')+'ImageType: %s: No target to point at...'%imgtype)
 
             self.out( '\t\t%s'%(subblock[3]))
             filter  = subblock[3].filter

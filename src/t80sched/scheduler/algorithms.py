@@ -12,7 +12,7 @@ from multiprocessing.pool import ThreadPool as Pool
 
 pool_size = 5  # your "parallelness"
 
-ScheduleOptions = Enum("HIG","STD")
+ScheduleOptions = Enum("HIG","STD","CAL")
 
 def ScheduleFunction(opt,*args,**kwargs):
 
@@ -535,6 +535,52 @@ Moon alt. = %6.2f. Skipping this slot...'%(itr+1,
 
         return std
 
+    elif sAlg == ScheduleOptions.CAL:
+
+        def calibrations(slotLen=60.):
+
+            targets = kwargs['query']
+
+            nightstart = kwargs['obsStart']
+            nightend   = kwargs['obsEnd']
+            calstart = nightstart - 4./24.
+
+            if 'calStart' in kwargs:
+                calstart = kwargs['calStart']
+            else:
+                log.warning('Time for start of calibrations not given. Starting 4 hours before night start.')
+
+            dtype = [('start',np.float),
+                     ('end',np.float),
+                     ('slotid',np.int),
+                     ('blockid',np.int) ]
+
+            obsSlots = np.array([],
+                        dtype= dtype)
+
+            blockid = targets[:][0][0].blockid
+            blockidList = np.array([blockid])
+            blockDuration = np.array([0]) # store duration of each block
+
+            # Get single block ids and determine block duration
+            for itr,target in enumerate(targets):
+                if blockid != target[0].blockid:
+                    blockid = target[0].blockid
+                    blockidList = np.append(blockidList,blockid)
+                    blockDuration = np.append(blockDuration,0.)
+
+                blockDuration[-1]+=(target[3].exptime*target[3].nexp)
+
+
+            for itr in range(len(blockDuration)):
+                obsSlots = np.append(obsSlots,
+                                     np.array([(calstart,calstart+blockDuration[itr],
+                                      itr,
+                                      blockidList[itr])],
+                                              dtype=dtype))
+            return obsSlots
+
+        return calibrations
 
 def Airmass(alt):
 
